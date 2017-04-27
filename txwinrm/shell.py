@@ -19,10 +19,11 @@ from twisted.internet import reactor, defer, task
 from twisted.internet.error import TimeoutError
 from xml.etree import cElementTree as ET
 from . import constants as c
-from .util import create_etree_request_sender, get_datetime
+from .util import create_etree_request_sender, get_datetime, RequestError
 
 log = logging.getLogger('winrm')
 _MAX_REQUESTS_PER_COMMAND = 9999
+_MAX_RETRIES = 3
 
 
 class CommandResponse(object):
@@ -219,22 +220,39 @@ class LongRunningCommand(object):
 
     @defer.inlineCallbacks
     def stop(self):
-        yield self._sender.send_request(
-            'signal',
-            shell_id=self._shell_id,
-            command_id=self._command_id,
-            signal_code=c.SHELL_SIGNAL_CTRL_C)
+        for x in xrange(_MAX_RETRIES):
+            try:
+                yield self._sender.send_request(
+                    'signal',
+                    shell_id=self._shell_id,
+                    command_id=self._command_id,
+                    signal_code=c.SHELL_SIGNAL_CTRL_C)
+            except RequestError as e:
+                # if we get a 500 error back, let's try again
+                if 'HTTP status: 500. An internal error occurred' in e.message:
+                    continue
+                else:
+                    raise
+            except Exception:
+                raise
+            else:
+                e = None
+                break
         try:
             stdout, stderr = yield self.receive()
         except TimeoutError:
             # close_connections done in receive()
             pass
-        yield self._sender.send_request(
-            'signal',
-            shell_id=self._shell_id,
-            command_id=self._command_id,
-            signal_code=c.SHELL_SIGNAL_TERMINATE)
+        try:
+            yield self._sender.send_request(
+                'signal',
+                shell_id=self._shell_id,
+                command_id=self._command_id,
+                signal_code=c.SHELL_SIGNAL_TERMINATE)
+        except RequestError:
+            pass
         yield self._sender.send_request('delete', shell_id=self._shell_id)
+        yield self._sender.close_connections()
         defer.returnValue(CommandResponse(stdout, stderr, self._exit_code))
 
 
