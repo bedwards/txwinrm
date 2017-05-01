@@ -50,6 +50,46 @@ class CommandResponse(object):
             stdout=self.stdout, stderr=self.stderr, exit_code=self.exit_code))
 
 
+def _build_ps_command_line_elem(ps_command, ps_script):
+    """Build PowerShell command line elements without splitting
+    the actual ps script into arguments. using _build_command_line_elem
+    with a ps script splits the script into separate arguments.  Remote
+    Windows shell inserts spaces when reconstituting the script.
+
+    ps_command - powershell command with arguments as string
+        e.g. 'powershell -NoLogo -NonInteractive -NoProfile -Command'
+    ps_script - script to be run in powershell as single line string
+        e.g. "& {get-counter -counter \"\memory\pages output/sec\" }"
+    """
+    command_line_parts = shlex.split(ps_command, posix=False)
+    # ensure '-command' is last
+    if command_line_parts[-1:][0].lower() != '-command':
+        index = 0
+        for option in command_line_parts:
+            if option.lower() == '-command':
+                command_line_parts.pop(index)
+                break
+            index += 1
+        command_line_parts.append(option)
+    prefix = "rsp"
+    ET.register_namespace(prefix, c.XML_NS_MSRSP)
+    command_line_elem = ET.Element('{%s}CommandLine' % c.XML_NS_MSRSP)
+    command_elem = ET.Element('{%s}Command' % c.XML_NS_MSRSP)
+    command_elem.text = command_line_parts[0]
+    command_line_elem.append(command_elem)
+    for arguments_text in command_line_parts[1:]:
+        arguments_elem = ET.Element('{%s}Arguments' % c.XML_NS_MSRSP)
+        arguments_elem.text = arguments_text
+        command_line_elem.append(arguments_elem)
+    arguments_elem = ET.Element('{%s}Arguments' % c.XML_NS_MSRSP)
+    arguments_elem.text = ps_script
+    command_line_elem.append(arguments_elem)
+    tree = ET.ElementTree(command_line_elem)
+    str_io = StringIO()
+    tree.write(str_io, encoding='utf-8')
+    return str_io.getvalue()
+
+
 def _build_command_line_elem(command_line):
     command_line_parts = shlex.split(command_line, posix=False)
     prefix = "rsp"
@@ -183,11 +223,15 @@ class LongRunningCommand(object):
         self._exit_code = None
 
     @defer.inlineCallbacks
-    def start(self, command_line):
+    def start(self, command_line, ps_script=None):
         log.debug("LongRunningCommand run_command: {0}".format(command_line))
-        elem = yield self._sender.send_request('create')
-        self._shell_id = _find_shell_id(elem)
-        command_line_elem = _build_command_line_elem(command_line)
+        if self._shell_id is None:
+            elem = yield self._sender.send_request('create')
+            self._shell_id = _find_shell_id(elem)
+        if ps_script is not None:
+            command_line_elem = _build_ps_command_line_elem(command_line, ps_script)
+        else:
+            command_line_elem = _build_command_line_elem(command_line)
         log.debug('LongRunningCommand run_command: sending command request '
                   '(shell_id={0}, command_line_elem={1})'.format(
                     self._shell_id, command_line_elem))
@@ -197,7 +241,7 @@ class LongRunningCommand(object):
                 command_line_elem=command_line_elem,
                 timeout=self._sender._sender._conn_info.timeout)
         except TimeoutError:
-            yield self._sender.close_connections()
+            yield self.delete_and_close()
             raise
         self._command_id = _find_command_id(command_elem)
 
@@ -209,7 +253,7 @@ class LongRunningCommand(object):
                 shell_id=self._shell_id,
                 command_id=self._command_id)
         except TimeoutError:
-            yield self._sender.close_connections()
+            yield self.delete_and_close()
             raise
         stdout_parts = _find_stream(receive_elem, self._command_id, 'stdout')
         stderr_parts = _find_stream(receive_elem, self._command_id, 'stderr')
@@ -219,8 +263,16 @@ class LongRunningCommand(object):
         defer.returnValue((stdout, stderr))
 
     @defer.inlineCallbacks
+    def delete_and_close(self):
+        """Delete the remote shell and close connection"""
+        yield self._sender.send_request('delete', shell_id=self._shell_id)
+        self._shell_id = None
+        yield self._sender.close_connections()
+        defer.returnValue(None)
+
+    @defer.inlineCallbacks
     def stop(self):
-        for x in xrange(_MAX_RETRIES):
+        for _ in xrange(_MAX_RETRIES):
             try:
                 yield self._sender.send_request(
                     'signal',
@@ -232,17 +284,18 @@ class LongRunningCommand(object):
                 if 'HTTP status: 500. An internal error occurred' in e.message:
                     continue
                 else:
-                    raise
+                    yield self.delete_and_close()
+                    raise e
             except Exception:
+                yield self.delete_and_close()
                 raise
             else:
-                e = None
                 break
         try:
             stdout, stderr = yield self.receive()
         except TimeoutError:
-            # close_connections done in receive()
-            pass
+            # close_connections done in receive() for TimeoutError
+            raise
         try:
             yield self._sender.send_request(
                 'signal',
@@ -251,8 +304,7 @@ class LongRunningCommand(object):
                 signal_code=c.SHELL_SIGNAL_TERMINATE)
         except RequestError:
             pass
-        yield self._sender.send_request('delete', shell_id=self._shell_id)
-        yield self._sender.close_connections()
+        yield self.delete_and_close()
         defer.returnValue(CommandResponse(stdout, stderr, self._exit_code))
 
 

@@ -623,23 +623,23 @@ class RequestSender(object):
             body_producer = _StringProducer(request)
 
         @defer.inlineCallbacks
-        def reset_agent_resend(self, request, body_producer):
-            self.agent = _get_agent()
-            if self.gssclient is not None:
+        def reset_agent_resend(sender, request, body_producer):
+            sender.agent = _get_agent()
+            if sender.gssclient is not None:
                 # do some cleanup first.  memory leaks were occurring
-                self.gssclient.cleanup()
-                self.gssclient = None
+                sender.gssclient.cleanup()
+                sender.gssclient = None
                 try:
-                    yield self._set_url_and_headers()
-                    encrypted_request = self.gssclient.encrypt_body(request)
+                    yield sender._set_url_and_headers()
+                    encrypted_request = sender.gssclient.encrypt_body(request)
                     if not encrypted_request.startswith("--Encrypted Boundary"):
-                        self._headers.setRawHeaders('Content-Type', _CONTENT_TYPE['Content-Type'])
+                        sender._headers.setRawHeaders('Content-Type', _CONTENT_TYPE['Content-Type'])
                     body_producer = _StringProducer(encrypted_request)
                 except Exception as e:
                     raise e
             try:
-                response = yield self.agent.request(
-                    'POST', self._url, self._headers, body_producer)
+                response = yield sender.agent.request(
+                    'POST', sender._url, sender._headers, body_producer)
             except Exception as e:
                 raise e
             defer.returnValue(response)
