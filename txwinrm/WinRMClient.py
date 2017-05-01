@@ -52,12 +52,13 @@ from .util import (
 from .shell import (
     _find_shell_id,
     _build_command_line_elem,
+    _build_ps_command_line_elem,
     _find_command_id,
     _MAX_REQUESTS_PER_COMMAND,
     _find_stream,
     _find_exit_code,
     CommandResponse,
-    _stripped_lines
+    _stripped_lines,
 )
 from .enumerate import (
     DEFAULT_RESOURCE_URI,
@@ -69,46 +70,6 @@ kerberos = None
 LOG = logging.getLogger('winrm')
 
 EnumInfo = namedtuple('EnumInfo', ['wql', 'resource_uri'])
-
-
-def _build_ps_command_line_elem(ps_command, ps_script):
-    """Build PowerShell command line elements without splitting
-    the actual ps script into arguments. using _build_command_line_elem
-    with a ps script splits the script into separate arguments.  Remote
-    Windows shell inserts spaces when reconstituting the script.
-
-    ps_command - powershell command with arguments as string
-        e.g. 'powershell -NoLogo -NonInteractive -NoProfile -Command'
-    ps_script - script to be run in powershell as single line string
-        e.g. "& {get-counter -counter \"\memory\pages output/sec\" }"
-    """
-    command_line_parts = shlex.split(ps_command, posix=False)
-    # ensure '-command' is last
-    if command_line_parts[-1:][0].lower() != '-command':
-        index = 0
-        for option in command_line_parts:
-            if option.lower() == '-command':
-                command_line_parts.pop(index)
-                break
-            index += 1
-        command_line_parts.append(option)
-    prefix = "rsp"
-    ET.register_namespace(prefix, c.XML_NS_MSRSP)
-    command_line_elem = ET.Element('{%s}CommandLine' % c.XML_NS_MSRSP)
-    command_elem = ET.Element('{%s}Command' % c.XML_NS_MSRSP)
-    command_elem.text = command_line_parts[0]
-    command_line_elem.append(command_elem)
-    for arguments_text in command_line_parts[1:]:
-        arguments_elem = ET.Element('{%s}Arguments' % c.XML_NS_MSRSP)
-        arguments_elem.text = arguments_text
-        command_line_elem.append(arguments_elem)
-    arguments_elem = ET.Element('{%s}Arguments' % c.XML_NS_MSRSP)
-    arguments_elem.text = ps_script
-    command_line_elem.append(arguments_elem)
-    tree = ET.ElementTree(command_line_elem)
-    str_io = StringIO()
-    tree.write(str_io, encoding='utf-8')
-    return str_io.getvalue()
 
 
 class WinRMSession(Session):
@@ -463,7 +424,14 @@ class SingleCommandClient(WinRMClient):
 
 
 class LongCommandClient(WinRMClient):
-    """Client to run a single long running command to a winrm device"""
+    """UNDER CONSTRUCTION!!! DO NOT USE!!
+
+    Having issues with this client.  May Need to be reworked a bit
+
+    TODO: If raising exception, we need to delete the remote shell
+    before closing connection
+
+    Client to run a single long running command to a winrm device"""
     def __init__(self, conn_info):
         super(LongCommandClient, self).__init__(conn_info)
         self._shell_id = None
@@ -489,6 +457,7 @@ class LongCommandClient(WinRMClient):
             command_elem = yield self._send_command(self._shell_id,
                                                     command_line)
         except TimeoutError:
+            yield self._sender.send_request('delete', shell_id=self._shell_id)
             yield self.close_connection()
             raise
         self._command_id = _find_command_id(command_elem)
