@@ -69,8 +69,6 @@ from .SessionManager import SESSION_MANAGER, Session
 kerberos = None
 LOG = logging.getLogger('winrm')
 
-EnumInfo = namedtuple('EnumInfo', ['wql', 'resource_uri'])
-
 
 class WinRMSession(Session):
     '''
@@ -267,36 +265,36 @@ class WinRMClient(object):
         verify_conn_info(conn_info)
         self.key = None
         self._conn_info = conn_info
-        self.session_manager = SESSION_MANAGER
-        self._session = None
         self.ps_script = None
+
+    def _session(self):
+        return SESSION_MANAGER.get_connection(self.key)
 
     @inlineCallbacks
     def init_connection(self):
         """Initialize a connection through the session_manager"""
-        if self._session:
+        if self._session() is not None:
             try:
                 self._refresh_dc.cancel()
             except Exception:
                 pass
-        yield self.session_manager.init_connection(self, WinRMSession)
-        self._session = self.session_manager.get_connection(self.key)
+        yield SESSION_MANAGER.init_connection(self, WinRMSession)
         returnValue(None)
 
     def is_kerberos(self):
         return self._conn_info.auth_type == 'kerberos'
 
     def decrypt_body(self, body):
-        return self._session.decrypt_body(body)
+        return self._session().decrypt_body(body)
 
     @inlineCallbacks
     def send_request(self, request, **kwargs):
-        if not self._session:
+        if not self._session():
             yield self.init_connection()
 
-        if not self._session:
+        if not self._session():
             raise Exception('Could not connect to device {}'.format(self.conn_info.hostname))
-        response = yield self._session.send_request(request, self, **kwargs)
+        response = yield self._session().send_request(request, self, **kwargs)
         returnValue(response)
 
     @inlineCallbacks
@@ -348,7 +346,7 @@ class WinRMClient(object):
 
     @inlineCallbacks
     def close_connection(self):
-        yield self._session.close_connection(self)
+        yield self._session().close_connection(self)
         returnValue(None)
 
 
@@ -372,8 +370,8 @@ class SingleCommandClient(WinRMClient):
         self.ps_script = ps_script
         yield self.init_connection()
         try:
-            cmd_response = yield self._session.sem.run(self.run_single_command,
-                                                       command_line)
+            cmd_response = yield self._session().sem.run(self.run_single_command,
+                                                         command_line)
         except Exception:
             yield self.close_connection()
             raise
@@ -452,7 +450,8 @@ class LongCommandClient(WinRMClient):
         self.key = (self._conn_info.ipaddress, command_line + str(ps_script))
         self.ps_script = ps_script
         yield self.init_connection()
-        self._shell_id = yield self._create_shell()
+        if self._shell_id is None:
+            self._shell_id = yield self._create_shell()
         try:
             command_elem = yield self._send_command(self._shell_id,
                                                     command_line)
@@ -507,7 +506,8 @@ class EnumerateClient(WinRMClient):
     @inlineCallbacks
     def enumerate(self, wql, resource_uri=DEFAULT_RESOURCE_URI):
         """Runs a remote WQL query."""
-        yield self.init_connection()
+        if self._session() is None:
+            yield self.init_connection()
         request_template_name = 'enumerate'
         enumeration_context = None
         items = []
@@ -515,7 +515,7 @@ class EnumerateClient(WinRMClient):
             for i in xrange(_MAX_REQUESTS_PER_ENUMERATION):
                 LOG.info('{0} "{1}" {2}'.format(
                     self._hostname, wql, request_template_name))
-                response = yield self._session._send_request(
+                response = yield self._session()._send_request(
                     request_template_name,
                     self,
                     resource_uri=resource_uri,
@@ -547,12 +547,11 @@ class EnumerateClient(WinRMClient):
         """
         items = {}
         yield self.init_connection()
-        self._session = self.session_manager.get_connection(self.key)
         for enum_info in enum_infos:
             try:
-                items[enum_info] = yield self._session.sem.run(self.enumerate,
-                                                               enum_info.wql,
-                                                               enum_info.resource_uri)
+                items[enum_info] = yield self._session().sem.run(self.enumerate,
+                                                                 enum_info.wql,
+                                                                 enum_info.resource_uri)
             except (UnauthorizedError, ForbiddenError):
                 # Fail the collection for general errors.
                 raise
@@ -616,6 +615,7 @@ class AssociatorClient(EnumerateClient):
         wql = 'Select {} from {}'.format(','.join(fields), seed_class)
         if where:
             wql += ' where {}'.format(where)
+        EnumInfo = namedtuple('EnumInfo', ['wql', 'resource_uri'])
         enum_info = EnumInfo(wql, resource_uri)
         results = yield self.do_collect([enum_info])
 
