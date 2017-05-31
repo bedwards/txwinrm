@@ -98,8 +98,7 @@ class Session(object):
 
             self._token = None
 
-        if client in self._clients:
-            self._clients.remove(client)
+        self._clients.discard(client)
         returnValue(None)
 
     @inlineCallbacks
@@ -171,8 +170,7 @@ class SessionManager(object):
         session = self.get_connection(client.key)
         if session:
             if session._token:
-                if client not in session._clients:
-                    session._clients.add(client)
+                session._clients.add(client)
                 returnValue(session._token)
 
         if session is None:
