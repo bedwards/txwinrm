@@ -66,6 +66,7 @@ from .enumerate import (
     _MAX_REQUESTS_PER_ENUMERATION
 )
 from .SessionManager import SESSION_MANAGER, Session
+from .twisted_utils import add_timeout
 kerberos = None
 LOG = logging.getLogger('winrm')
 
@@ -98,6 +99,13 @@ class WinRMSession(Session):
         self.sem = DeferredSemaphore(1)
 
         self._refresh_dc = None
+
+    def semrun(self, fn, *args, **kwargs):
+        """Run fn(*args, **kwargs) under a DeferredSemaphore with a timeout."""
+        return self.sem.run(
+            add_timeout,
+            fn(*args, **kwargs),
+            self._conn_info.timeout)
 
     def is_kerberos(self):
         return self._conn_info.auth_type == 'kerberos'
@@ -370,8 +378,9 @@ class SingleCommandClient(WinRMClient):
         self.ps_script = ps_script
         yield self.init_connection()
         try:
-            cmd_response = yield self._session().sem.run(self.run_single_command,
-                                                         command_line)
+            cmd_response = yield self._session().semrun(
+                self.run_single_command,
+                command_line)
         except Exception:
             yield self.close_connection()
             raise
@@ -549,9 +558,10 @@ class EnumerateClient(WinRMClient):
         yield self.init_connection()
         for enum_info in enum_infos:
             try:
-                items[enum_info] = yield self._session().sem.run(self.enumerate,
-                                                                 enum_info.wql,
-                                                                 enum_info.resource_uri)
+                items[enum_info] = yield self._session().semrun(
+                    self.enumerate,
+                    enum_info.wql,
+                    enum_info.resource_uri)
             except (UnauthorizedError, ForbiddenError):
                 # Fail the collection for general errors.
                 raise
