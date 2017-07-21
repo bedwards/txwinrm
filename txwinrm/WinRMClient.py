@@ -66,7 +66,7 @@ from .enumerate import (
     _MAX_REQUESTS_PER_ENUMERATION
 )
 from .SessionManager import SESSION_MANAGER, Session
-from .twisted_utils import add_timeout
+from .twisted_utils import with_timeout
 kerberos = None
 LOG = logging.getLogger('winrm')
 
@@ -103,9 +103,11 @@ class WinRMSession(Session):
     def semrun(self, fn, *args, **kwargs):
         """Run fn(*args, **kwargs) under a DeferredSemaphore with a timeout."""
         return self.sem.run(
-            add_timeout,
-            fn(*args, **kwargs),
-            self._conn_info.timeout)
+            with_timeout,
+            fn=fn,
+            args=args,
+            kwargs=kwargs,
+            seconds=self._conn_info.timeout)
 
     def is_kerberos(self):
         return self._conn_info.auth_type == 'kerberos'
