@@ -11,6 +11,14 @@ from twisted.internet import defer, error, reactor
 from twisted.python import failure
 
 
+def with_timeout(fn, args=None, kwargs=None, seconds=None, exception_class=error.TimeoutError):
+    """Execute asynchronous function fn(*args, **kwargs) with a timeout."""
+    return add_timeout(
+        deferred=fn(*args, **kwargs),
+        seconds=seconds,
+        exception_class=exception_class)
+
+
 def add_timeout(deferred, seconds, exception_class=error.TimeoutError):
     """Return new Deferred that will errback exception_class after seconds."""
     deferred_with_timeout = defer.Deferred()
