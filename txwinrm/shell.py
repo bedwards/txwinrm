@@ -214,6 +214,24 @@ def create_single_shot_command(conn_info):
     return SingleShotCommand(sender)
 
 
+def _find_enum_context(elem):
+    e_context = None
+    xpath = './/{{{}}}EnumerationContext'.format(c.XML_NS_ENUMERATION)
+    ctxt_elem = elem.find(xpath)
+    if ctxt_elem is not None:
+        e_context = ctxt_elem.text.split(':')[1]
+    return e_context
+
+
+def _find_shell_ids(elem):
+    ids = []
+    xpath = './/{{{}}}ShellId'.format(c.XML_NS_MSRSP)
+    shells = elem.findall(xpath)
+    for shell in shells:
+        ids.append(shell.text)
+    return ids
+
+
 class LongRunningCommand(object):
 
     def __init__(self, sender):
@@ -223,9 +241,29 @@ class LongRunningCommand(object):
         self._exit_code = None
 
     @defer.inlineCallbacks
+    def is_shell_active(self, shell_id):
+        if shell_id is None:
+            defer.returnValue(False)
+        elem = yield self._sender.send_request('enum_shells')
+        enum_context = _find_enum_context(elem)
+        if enum_context is None:
+            defer.returnValue(False)
+        elem = yield self._sender.send_request('pull_shells', uuid=enum_context)
+        shell_ids = _find_shell_ids(elem)
+        if shell_id in shell_ids:
+            defer.returnValue(True)
+        else:
+            defer.returnValue(False)
+
+    @defer.inlineCallbacks
     def start(self, command_line, ps_script=None):
-        log.debug("LongRunningCommand run_command: {0}".format(command_line))
-        if self._shell_id is None:
+        log.debug("LongRunningCommand run_command: {0}".format(command_line + ps_script))
+        try:
+            active_shell = yield self.is_shell_active(self._shell_id)
+        except TimeoutError:
+            yield self.delete_and_close()
+            raise
+        if active_shell is False:
             elem = yield self._sender.send_request('create')
             self._shell_id = _find_shell_id(elem)
         if ps_script is not None:
@@ -234,7 +272,7 @@ class LongRunningCommand(object):
             command_line_elem = _build_command_line_elem(command_line)
         log.debug('LongRunningCommand run_command: sending command request '
                   '(shell_id={0}, command_line_elem={1})'.format(
-                    self._shell_id, command_line_elem))
+                      self._shell_id, command_line_elem))
         try:
             command_elem = yield self._sender.send_request(
                 'command', shell_id=self._shell_id,
