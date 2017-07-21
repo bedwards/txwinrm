@@ -1,0 +1,34 @@
+<s:Envelope
+   xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+   xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing"
+   xmlns:wsen="http://schemas.xmlsoap.org/ws/2004/09/enumeration"
+   xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd">
+   <s:Header>
+     <wsa:To>http://SORINOTEST05:80/wsman</wsa:To>
+     <wsman:ResourceURI s:mustUnderstand="true">
+       http://schemas.microsoft.com/wbem/wsman/1/windows/shell
+     </wsman:ResourceURI>
+     <wsa:ReplyTo>
+       <wsa:Address s:mustUnderstand="true">
+         http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous
+       </wsa:Address>
+     </wsa:ReplyTo>
+     <wsa:Action s:mustUnderstand="true">
+       http://schemas.xmlsoap.org/ws/2004/09/enumeration/Pull
+     </wsa:Action>
+     <wsman:MaxEnvelopeSize s:mustUnderstand="true">153600</wsman:MaxEnvelopeSize>
+     <wsa:MessageID>
+       uuid:BE9EDB22-23A3-489A-B025-ED7F3461E4AB</wsa:MessageID>
+     <wsman:Locale xml:lang="en-US" s:mustUnderstand="false" />
+     <wsman:OperationTimeout>PT60.000S</wsman:OperationTimeout>
+   </s:Header>
+   <s:Body>
+     <wsen:Pull>
+       <wsen:EnumerationContext
+         xmlns:wsen="http://schemas.xmlsoap.org/ws/2004/09/enumeration">
+         uuid:{uuid}
+         </wsen:EnumerationContext>
+       <wsen:MaxElements>5</wsen:MaxElements>
+     </wsen:Pull>
+   </s:Body>
+ </s:Envelope>

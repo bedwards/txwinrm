@@ -40,7 +40,7 @@ _NANOSECONDS_PATTERN = re.compile(r'\.(\d{6})(\d{3})')
 _REQUEST_TEMPLATE_NAMES = (
     'enumerate', 'pull',
     'create', 'command', 'send', 'receive', 'signal', 'delete',
-    'subscribe', 'event_pull', 'unsubscribe')
+    'subscribe', 'event_pull', 'unsubscribe', 'enum_shells', 'pull_shells')
 _REQUEST_TEMPLATE_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), 'request')
 _REQUEST_TEMPLATES = {}
