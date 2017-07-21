@@ -258,7 +258,11 @@ class LongRunningCommand(object):
     @defer.inlineCallbacks
     def start(self, command_line, ps_script=None):
         log.debug("LongRunningCommand run_command: {0}".format(command_line + ps_script))
-        active_shell = yield self.is_shell_active(self._shell_id)
+        try:
+            active_shell = yield self.is_shell_active(self._shell_id)
+        except TimeoutError:
+            yield self.delete_and_close()
+            raise
         if active_shell is False:
             elem = yield self._sender.send_request('create')
             self._shell_id = _find_shell_id(elem)
