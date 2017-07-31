@@ -11,15 +11,11 @@ import copy
 import logging
 from collections import namedtuple
 from httplib import BAD_REQUEST, UNAUTHORIZED, FORBIDDEN, OK
-import shlex
-from cStringIO import StringIO
 
-from twisted.internet import reactor
 from twisted.internet.defer import (
     inlineCallbacks,
     returnValue,
-    DeferredSemaphore,
-    succeed
+    DeferredSemaphore
 )
 from twisted.internet.error import TimeoutError
 
@@ -140,30 +136,43 @@ class WinRMSession(Session):
             returnValue('basic_auth_token')
 
     @inlineCallbacks
-    def _deferred_logout(self):
+    def close_cached_connections(self):
         # close connections so we do not end up with orphans
         # return a Deferred()
-        self.loggedout = True
         if self._agent and hasattr(self._agent, 'closeCachedConnections'):
             # twisted 11 has no return and is part of the Agent
-            return succeed(self._agent.closeCachedConnections())
+            self._agent.closeCachedConnections()
         elif self._agent:
-            # twisted 12 returns a Deferred
-            return self._agent._pool.closeCachedConnections()
-        else:
-            # no agent
-            return succeed(None)
+            # twisted 12 has a pool
+            yield self._agent._pool.closeCachedConnections()
+            # dereference pool so it can go away
+            self._agent._pool = None
+        returnValue(None)
+
+    @inlineCallbacks
+    def _deferred_logout(self):
+        yield self.close_cached_connections()
+        self.loggedout = True
+        # do some cleanup to release memory
+        self._agent = None
+        self.sem = None
+        if self._gssclient is not None:
+            self._gssclient.cleanup()
+            self._gssclient = None
+        returnValue(None)
 
     @inlineCallbacks
     def handle_response(self, request, response, client):
         if response.code == UNAUTHORIZED or response.code == BAD_REQUEST:
             # check to see if we need to re-authorize due to lost connection or bad request error
+            # only retry if using kerberos
+            self._token = None
+            yield self.close_cached_connections()
+            self._agent = _get_agent()
+            self._login_d = None
             if self._gssclient is not None:
                 self._gssclient.cleanup()
                 self._gssclient = None
-                self._token = None
-                self._agent = _get_agent()
-                self._login_d = None
                 yield SESSION_MANAGER.init_connection(client, WinRMSession)
                 try:
                     yield self._set_headers()
@@ -255,16 +264,6 @@ class WinRMSession(Session):
         response = yield self.handle_response(request, response, client)
         returnValue(response)
 
-    def close_connection(self, client):
-        try:
-            self._refresh_dc.cancel()
-        except Exception:
-            pass
-
-        # Close the connection after 60 seconds.  This will give other clients
-        # enough time to keep the connection alive and continue using the same session.
-        self._refresh_dc = reactor.callLater(60, SESSION_MANAGER.close_connection, client)
-
 
 class WinRMClient(object):
     """Base winrm client class
@@ -354,10 +353,8 @@ class WinRMClient(object):
             'receive', shell_id=shell_id, command_id=command_id)
         returnValue(receive_elem)
 
-    @inlineCallbacks
     def close_connection(self):
-        yield self._session().close_connection(self)
-        returnValue(None)
+        SESSION_MANAGER.close_connection(self)
 
 
 class SingleCommandClient(WinRMClient):
@@ -384,7 +381,7 @@ class SingleCommandClient(WinRMClient):
                 self.run_single_command,
                 command_line)
         except Exception:
-            yield self.close_connection()
+            self.close_connection()
             raise
         returnValue(cmd_response)
 
@@ -404,9 +401,9 @@ class SingleCommandClient(WinRMClient):
         try:
             cmd_response = yield self._run_command(shell_id, command_line)
         except TimeoutError:
-            yield self.close_connection()
+            self.close_connection()
         yield self._delete_shell(shell_id)
-        yield self.close_connection()
+        self.close_connection()
         returnValue(cmd_response)
 
     @inlineCallbacks
@@ -468,7 +465,7 @@ class LongCommandClient(WinRMClient):
                                                     command_line)
         except TimeoutError:
             yield self._sender.send_request('delete', shell_id=self._shell_id)
-            yield self.close_connection()
+            self.close_connection()
             raise
         self._command_id = _find_command_id(command_elem)
         returnValue(None)
@@ -478,7 +475,7 @@ class LongCommandClient(WinRMClient):
         try:
             receive_elem = yield self._send_receive(self._shell_id, self._command_id)
         except TimeoutError:
-            yield self.close_connection()
+            self.close_connection()
             raise
         stdout_parts = _find_stream(receive_elem, self._command_id, 'stdout')
         stderr_parts = _find_stream(receive_elem, self._command_id, 'stderr')
@@ -497,7 +494,7 @@ class LongCommandClient(WinRMClient):
         yield self._signal_terminate(self._shell_id, self._command_id)
         yield self._delete_shell(self._shell_id)
         if close:
-            yield self.close_connection()
+            self.close_connection()
         returnValue(CommandResponse(stdout, stderr, self._exit_code))
 
 
@@ -571,7 +568,7 @@ class EnumerateClient(WinRMClient):
                 # Store empty results for other query-specific errors.
                 continue
 
-        yield self.close_connection()
+        self.close_connection()
         returnValue(items)
 
 
