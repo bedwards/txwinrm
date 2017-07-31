@@ -23,7 +23,8 @@ A Client should always have a key property.  This will be unique to the types
 of transactions/requests being made through a single Session
 
 """
-
+import copy
+from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks, returnValue
 
 
@@ -47,6 +48,9 @@ class Session(object):
 
         # Error from last login if applicable.
         self._login_error = None
+
+        # Deferred for logouts
+        self._logout_dc = None
 
     @inlineCallbacks
     def deferred_login(self, client):
@@ -85,20 +89,19 @@ class Session(object):
         returnValue(self._token)
 
     @inlineCallbacks
-    def deferred_logout(self, client):
+    def deferred_logout(self):
         """Calls session._deferred_logout() only if all other clients
         using the same session have also called deferred_logout.
         """
-        if len(self._clients) <= 1:
-            if self._token:
-                try:
-                    yield self._deferred_logout(client)
-                except Exception:
-                    pass
+        if self._token:
+            try:
+                yield self._deferred_logout()
+            except Exception:
+                pass
 
-            self._token = None
+        self._token = None
 
-        self._clients.discard(client)
+        self._clients.clear()
         returnValue(None)
 
     @inlineCallbacks
@@ -116,12 +119,12 @@ class Session(object):
         returnValue(None)
 
     @inlineCallbacks
-    def _deferred_logout(self, client):
+    def _deferred_logout(self, client=None):
         """Performs the ZenPack specific logout from a device.
 
         This will only be called by the last client to logout of the session.
 
-        :param client: Client closing connection
+        :param client: Client closing connection (Optional)
         :type client: ZenPack specific client
         :rtype: Deferred
         :return: Returns a Deferred which logs out of the device.
@@ -140,7 +143,7 @@ class SessionManager(object):
     def get_connection(self, key):
         """Return the session for a given key."""
         if key is None:
-            raise Exception('Client key cannot be empty')
+            raise Exception('WinRM SessionManager: Client key cannot be empty')
         return self._sessions.get(key, None)
 
     def remove_connection(self, key):
@@ -165,7 +168,7 @@ class SessionManager(object):
         :type client: ZenPack defined client
         """
         if not hasattr(client, 'key'):
-            raise Exception('Client must contain a key field')
+            raise Exception('WinRM SessionManager: Client must contain a key field')
 
         session = self.get_connection(client.key)
         if session:
@@ -180,7 +183,6 @@ class SessionManager(object):
         token = yield session.deferred_login(client)
         returnValue(token)
 
-    @inlineCallbacks
     def close_connection(self, client):
         """Kick off a session's logout.
 
@@ -189,13 +191,22 @@ class SessionManager(object):
         :param client: Client closing connection
         :type client: ZenPack defined class
         """
-        session = self.get_connection(client.key)
+        key = copy.deepcopy(client.key)
+        session = self.get_connection(key)
         if not session:
-            returnValue(None)
-        yield session.deferred_logout(client)
-        if not session._clients:
-            # No more clients so we don't need to keep the session.
-            self._sessions.pop(client.key)
+            # should never happen, but check
+            return
+        try:
+            session._logout_dc.cancel()
+        except Exception:
+            pass
+        session._clients.discard(client)
+        session._logout_dc = reactor.callLater(60, self.deferred_logout, key)
+
+    @inlineCallbacks
+    def deferred_logout(self, key):
+        session = self._sessions.pop(key)
+        yield session.deferred_logout()
         returnValue(None)
 
 
