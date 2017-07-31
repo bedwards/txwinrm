@@ -624,6 +624,7 @@ class RequestSender(object):
 
         @defer.inlineCallbacks
         def reset_agent_resend(sender, request, body_producer):
+            yield self.close_connections()
             sender.agent = _get_agent()
             if sender.gssclient is not None:
                 # do some cleanup first.  memory leaks were occurring
@@ -666,8 +667,8 @@ class RequestSender(object):
                         if auth_details:
                             yield self.gssclient._step(auth_details)
                     except kerberos.GSSError as e:
-                        msg ="HTTP Unauthorized received.  "\
-                        "Kerberos error code {0}: {1}.".format(e.args[1][1],e.args[1][0])
+                        msg = "HTTP Unauthorized received.  "\
+                            "Kerberos error code {0}: {1}.".format(e.args[1][1], e.args[1][0])
                         raise Exception(msg)
                 raise UnauthorizedError(
                     "HTTP Unauthorized received: Check username and password")
@@ -690,13 +691,14 @@ class RequestSender(object):
         # return a Deferred()
         if self.agent and hasattr(self.agent, 'closeCachedConnections'):
             # twisted 11 has no return and is part of the Agent
-            return defer.succeed(self.agent.closeCachedConnections())
+            self.agent.closeCachedConnections()
         elif self.agent:
-            # twisted 12 returns a Deferred
-            return self.agent._pool.closeCachedConnections()
-        else:
-            # no agent
-            return defer.succeed(None)
+            # twisted 12 returns a Deferred from the pool
+            # we need to also dereference the pool so it can go away
+            yield self.agent._pool.closeCachedConnections()
+            self.agent._pool = None
+        # no agent
+        defer.returnValue(None)
 
 
 class _StringProtocol(Protocol):
@@ -734,7 +736,7 @@ class EtreeRequestSender(object):
                 import xml.dom.minidom
                 xml = xml.dom.minidom.parseString(xml_str)
                 log.debug(xml.toprettyxml())
-            except:
+            except Exception:
                 log.debug('Could not prettify response XML: "{0}"'.format(xml_str))
         defer.returnValue(ET.fromstring(xml_str))
 
