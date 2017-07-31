@@ -686,6 +686,7 @@ class RequestSender(object):
                 response.code, message))
         defer.returnValue(response)
 
+    @defer.inlineCallbacks
     def close_connections(self):
         # close connections
         # return a Deferred()
