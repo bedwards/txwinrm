@@ -145,8 +145,6 @@ class WinRMSession(Session):
         elif self._agent:
             # twisted 12 has a pool
             yield self._agent._pool.closeCachedConnections()
-            # dereference pool so it can go away
-            self._agent._pool = None
         returnValue(None)
 
     @inlineCallbacks

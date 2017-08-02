@@ -695,9 +695,7 @@ class RequestSender(object):
             self.agent.closeCachedConnections()
         elif self.agent:
             # twisted 12 returns a Deferred from the pool
-            # we need to also dereference the pool so it can go away
             yield self.agent._pool.closeCachedConnections()
-            self.agent._pool = None
         # no agent
         defer.returnValue(None)
 
