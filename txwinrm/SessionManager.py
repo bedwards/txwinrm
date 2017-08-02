@@ -99,8 +99,10 @@ class Session(object):
             except Exception:
                 pass
 
+        # make sure we don't have a token
         self._token = None
 
+        # clients should have been discarded, but just to be sure
         self._clients.clear()
         returnValue(None)
 
@@ -171,15 +173,21 @@ class SessionManager(object):
             raise Exception('WinRM SessionManager: Client must contain a key field')
 
         session = self.get_connection(client.key)
-        if session:
+        if session is not None:
+            # add client to set
+            session._clients.add(client)
+            # update conn_info in case something changed
+            session.update_conn_info(client)
+            # already connected, return
             if session._token:
-                session._clients.add(client)
                 returnValue(session._token)
 
+        # no session yet, so create a new one
         if session is None:
             session = session_class()
             self._sessions[client.key] = session
 
+        # log in
         token = yield session.deferred_login(client)
         returnValue(token)
 
@@ -205,8 +213,8 @@ class SessionManager(object):
 
     @inlineCallbacks
     def deferred_logout(self, key):
-        session = self._sessions.pop(key)
-        yield session.deferred_logout()
+        session = self.get_connection(key)
+        yield session._deferred_logout()
         returnValue(None)
 
 
