@@ -320,7 +320,7 @@ class LongRunningCommand(object):
             except RequestError as e:
                 # if we get a 500 error back, let's try again
                 if 'HTTP status: 500. An internal error occurred' in e.message:
-                    continue
+                    pass
                 else:
                     yield self.delete_and_close()
                     raise e
@@ -334,6 +334,10 @@ class LongRunningCommand(object):
         except TimeoutError:
             # close_connections done in receive() for TimeoutError
             raise
+        except RequestError:
+            yield self.delete_and_close()
+            self._shell_id = None
+            defer.returnValue(CommandResponse([], [], 0))
         try:
             yield self._sender.send_request(
                 'signal',
@@ -343,6 +347,7 @@ class LongRunningCommand(object):
         except RequestError:
             pass
         yield self.delete_and_close()
+        self._shell_id = None
         defer.returnValue(CommandResponse(stdout, stderr, self._exit_code))
 
 
