@@ -625,7 +625,6 @@ class RequestSender(object):
         @defer.inlineCallbacks
         def reset_agent_resend(sender, request, body_producer):
             yield self.close_connections()
-            sender.agent = _get_agent()
             if sender.gssclient is not None:
                 # do some cleanup first.  memory leaks were occurring
                 sender.gssclient.cleanup()

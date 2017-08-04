@@ -205,8 +205,8 @@ class SessionManager(object):
 
     @inlineCallbacks
     def deferred_logout(self, key):
-        session = self._sessions.pop(key)
-        yield session.deferred_logout()
+        session = self.get_connection(key)
+        yield session.close_cached_connections()
         returnValue(None)
 
 
