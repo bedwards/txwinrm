@@ -625,7 +625,6 @@ class RequestSender(object):
         @defer.inlineCallbacks
         def reset_agent_resend(sender, request, body_producer):
             yield self.close_connections()
-            sender.agent = _get_agent()
             if sender.gssclient is not None:
                 # do some cleanup first.  memory leaks were occurring
                 sender.gssclient.cleanup()
@@ -695,9 +694,7 @@ class RequestSender(object):
             self.agent.closeCachedConnections()
         elif self.agent:
             # twisted 12 returns a Deferred from the pool
-            # we need to also dereference the pool so it can go away
             yield self.agent._pool.closeCachedConnections()
-            self.agent._pool = None
         # no agent
         defer.returnValue(None)
 

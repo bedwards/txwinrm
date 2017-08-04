@@ -94,6 +94,7 @@ class WinRMSession(Session):
         # connection.
         self.sem = DeferredSemaphore(1)
 
+        # unused.  reserved for possible future use
         self._refresh_dc = None
 
     def semrun(self, fn, *args, **kwargs):
@@ -124,10 +125,13 @@ class WinRMSession(Session):
             self._headers.addRawHeader('Connection', self._conn_info.connectiontype)
         return self._headers
 
+    def update_conn_info(self, client):
+        self._conn_info = client._conn_info
+
     @inlineCallbacks
     def _deferred_login(self, client=None):
         if client:
-            self._conn_info = client._conn_info
+            self.update_conn_info(client)
         self._url = "{c.scheme}://{c.ipaddress}:{c.port}/wsman".format(c=self._conn_info)
         if self.is_kerberos():
             self._gssclient = yield _authenticate_with_kerberos(self._conn_info, self._url, self._agent)
@@ -145,20 +149,19 @@ class WinRMSession(Session):
         elif self._agent:
             # twisted 12 has a pool
             yield self._agent._pool.closeCachedConnections()
-            # dereference pool so it can go away
-            self._agent._pool = None
         returnValue(None)
 
     @inlineCallbacks
     def _deferred_logout(self):
+        # close connections so they don't timeout
+        # gssclient will no longer be valid so get rid of it
+        # set token to None so the next client will reinitialize
+        #   the connection
         yield self.close_cached_connections()
-        self.loggedout = True
-        # do some cleanup to release memory
-        self._agent = None
-        self.sem = None
         if self._gssclient is not None:
             self._gssclient.cleanup()
             self._gssclient = None
+        self._token = None
         returnValue(None)
 
     @inlineCallbacks
@@ -282,11 +285,6 @@ class WinRMClient(object):
     @inlineCallbacks
     def init_connection(self):
         """Initialize a connection through the session_manager"""
-        if self._session() is not None:
-            try:
-                self._refresh_dc.cancel()
-            except Exception:
-                pass
         yield SESSION_MANAGER.init_connection(self, WinRMSession)
         returnValue(None)
 
@@ -509,7 +507,7 @@ class EnumerateClient(WinRMClient):
         super(EnumerateClient, self).__init__(conn_info)
         self._handler = SaxResponseHandler(self)
         self._hostname = conn_info.ipaddress
-        self.key = (conn_info.ipaddress, 'short')
+        self.key = (conn_info.ipaddress, 'enumerate')
 
     @inlineCallbacks
     def enumerate(self, wql, resource_uri=DEFAULT_RESOURCE_URI):
