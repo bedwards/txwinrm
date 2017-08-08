@@ -18,8 +18,10 @@ from cStringIO import StringIO
 from twisted.internet import reactor, defer, task
 from twisted.internet.error import TimeoutError
 from xml.etree import cElementTree as ET
+from xml.etree import ElementTree
 from . import constants as c
 from .util import create_etree_request_sender, get_datetime, RequestError
+from .enumerate import create_parser_and_factory
 
 log = logging.getLogger('winrm')
 _MAX_REQUESTS_PER_COMMAND = 9999
@@ -241,6 +243,31 @@ class LongRunningCommand(object):
         self._exit_code = None
 
     @defer.inlineCallbacks
+    def get_active_shell(self):
+        elem = yield self._sender.send_request('enum_shells')
+        enum_context = _find_enum_context(elem)
+        if enum_context is None:
+            defer.returnValue(False)
+        response = yield self._sender.send_request('pull_shells', uuid=enum_context)
+        body = ElementTree.tostring(response)
+        parser, factory = create_parser_and_factory()
+        parser.feed(body)
+        user_domain = self._sender._sender._conn_info.username.split('@')
+        try:
+            # get domain user as netbios
+            user = (user_domain[1].split('.')[0] + '\\' + user_domain[0]).lower()
+        except IndexError:
+            # local user, no netbios
+            # user_domain[0] will always exist
+            user = user_domain[0].lower()
+        found_shell = False
+        for shell in factory.items:
+            if user == shell.Owner.lower():
+                self._shell_id = shell.ShellId
+                found_shell = True
+        defer.returnValue(found_shell)
+
+    @defer.inlineCallbacks
     def is_shell_active(self, shell_id):
         if shell_id is None:
             defer.returnValue(False)
@@ -258,10 +285,11 @@ class LongRunningCommand(object):
     @defer.inlineCallbacks
     def start(self, command_line, ps_script=None):
         log.debug("LongRunningCommand run_command: {0}".format(command_line + ps_script))
+        yield self.get_active_shell()
         try:
-            active_shell = yield self.is_shell_active(self._shell_id)
+            active_shell = yield self.get_active_shell()
         except TimeoutError:
-            yield self.delete_and_close()
+            yield self._sender.close_connections()
             raise
         if active_shell is False:
             elem = yield self._sender.send_request('create')
@@ -279,7 +307,7 @@ class LongRunningCommand(object):
                 command_line_elem=command_line_elem,
                 timeout=self._sender._sender._conn_info.timeout)
         except TimeoutError:
-            yield self.delete_and_close()
+            yield self._sender.close_connections()
             raise
         self._command_id = _find_command_id(command_elem)
 
@@ -291,7 +319,7 @@ class LongRunningCommand(object):
                 shell_id=self._shell_id,
                 command_id=self._command_id)
         except TimeoutError:
-            yield self.delete_and_close()
+            yield self._sender.close_connections()
             raise
         stdout_parts = _find_stream(receive_elem, self._command_id, 'stdout')
         stderr_parts = _find_stream(receive_elem, self._command_id, 'stderr')
@@ -299,14 +327,6 @@ class LongRunningCommand(object):
         stdout = _stripped_lines(stdout_parts)
         stderr = _stripped_lines(stderr_parts)
         defer.returnValue((stdout, stderr))
-
-    @defer.inlineCallbacks
-    def delete_and_close(self):
-        """Delete the remote shell and close connection"""
-        yield self._sender.send_request('delete', shell_id=self._shell_id)
-        self._shell_id = None
-        yield self._sender.close_connections()
-        defer.returnValue(None)
 
     @defer.inlineCallbacks
     def stop(self):
@@ -322,10 +342,10 @@ class LongRunningCommand(object):
                 if 'HTTP status: 500. An internal error occurred' in e.message:
                     pass
                 else:
-                    yield self.delete_and_close()
+                    yield self._sender.close_connections()
                     raise e
             except Exception:
-                yield self.delete_and_close()
+                yield self._sender.close_connections()
                 raise
             else:
                 break
@@ -335,7 +355,7 @@ class LongRunningCommand(object):
             # close_connections done in receive() for TimeoutError
             raise
         except RequestError:
-            yield self.delete_and_close()
+            yield self._sender.close_connections()
             self._shell_id = None
             defer.returnValue(CommandResponse([], [], 0))
         try:
@@ -346,7 +366,7 @@ class LongRunningCommand(object):
                 signal_code=c.SHELL_SIGNAL_TERMINATE)
         except RequestError:
             pass
-        yield self.delete_and_close()
+        yield self._sender.close_connections()
         self._shell_id = None
         defer.returnValue(CommandResponse(stdout, stderr, self._exit_code))
 
