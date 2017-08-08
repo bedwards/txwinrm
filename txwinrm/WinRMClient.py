@@ -55,10 +55,12 @@ from .shell import (
     _find_exit_code,
     CommandResponse,
     _stripped_lines,
+    _find_enum_context
 )
 from .enumerate import (
     DEFAULT_RESOURCE_URI,
     SaxResponseHandler,
+    create_parser_and_factory,
     _MAX_REQUESTS_PER_ENUMERATION
 )
 from .SessionManager import SESSION_MANAGER, Session
@@ -278,6 +280,7 @@ class WinRMClient(object):
         self.key = None
         self._conn_info = conn_info
         self.ps_script = None
+        self._shell_id = None
 
     def _session(self):
         return SESSION_MANAGER.get_connection(self.key)
@@ -305,9 +308,38 @@ class WinRMClient(object):
         returnValue(response)
 
     @inlineCallbacks
+    def get_active_shell(self):
+        elem = yield self.send_request('enum_shells')
+        enum_context = _find_enum_context(elem)
+        if enum_context is None:
+            returnValue(False)
+        response = yield self.send_request('pull_shells', uuid=enum_context)
+        body = ET.tostring(response)
+        parser, factory = create_parser_and_factory()
+        parser.feed(body)
+        # shell owner is in netbios format DOMAIN\user or just local user
+        user_domain = self._conn_info.username.split('@')
+        try:
+            # get domain user as netbios
+            user = (user_domain[1].split('.')[0] + '\\' + user_domain[0]).lower()
+        except IndexError:
+            # local user, no netbios
+            user = user_domain[0].lower()
+        found_shell = False
+        for shell in factory.items:
+            if user == shell.Owner.lower():
+                self._shell_id = shell.ShellId
+                found_shell = True
+        returnValue(found_shell)
+
+    @inlineCallbacks
     def _create_shell(self):
-        elem = yield self.send_request('create')
-        returnValue(_find_shell_id(elem))
+        # check for active shell first
+        active_shell = yield self.get_active_shell()
+        if active_shell is False:
+            elem = yield self.send_request('create')
+            self._shell_id = _find_shell_id(elem)
+        returnValue(self._shell_id)
 
     @inlineCallbacks
     def _delete_shell(self, shell_id):
@@ -394,13 +426,12 @@ class SingleCommandClient(WinRMClient):
                 .stderr = [<non-empty, stripped line>, ...]
                 .exit_code = <int>
         """
-        shell_id = yield self._create_shell()
+        yield self._create_shell()
         cmd_response = None
         try:
-            cmd_response = yield self._run_command(shell_id, command_line)
+            cmd_response = yield self._run_command(self._shell_id, command_line)
         except TimeoutError:
             self.close_connection()
-        yield self._delete_shell(shell_id)
         self.close_connection()
         returnValue(cmd_response)
 
