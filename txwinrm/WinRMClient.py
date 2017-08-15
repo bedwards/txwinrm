@@ -1,6 +1,6 @@
 ##############################################################################
 #
-# Copyright (C) Zenoss, Inc. 2013, all rights reserved.
+# Copyright (C) Zenoss, Inc. 2016-2017, all rights reserved.
 #
 # This content is made available according to terms specified in the LICENSE
 # file at the top-level directory of this package.
@@ -173,7 +173,6 @@ class WinRMSession(Session):
             # only retry if using kerberos
             self._token = None
             yield self.close_cached_connections()
-            self._agent = _get_agent()
             self._login_d = None
             if self._gssclient is not None:
                 self._gssclient.cleanup()
