@@ -240,6 +240,12 @@ class WinRMSession(Session):
     @inlineCallbacks
     def _send_request(self, request_template_name, client, envelope_size=None,
                       locale=None, code_page=None, **kwargs):
+        if self._logout_dc is not None:
+            try:
+                self._logout_dc.cancel()
+                self._logout_dc = None
+            except Exception:
+                pass
         kwargs['envelope_size'] = envelope_size or client._conn_info.envelope_size
         kwargs['locale'] = locale or client._conn_info.locale
         kwargs['code_page'] = code_page or client._conn_info.code_page
