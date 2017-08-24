@@ -285,7 +285,6 @@ class LongRunningCommand(object):
     @defer.inlineCallbacks
     def start(self, command_line, ps_script=None):
         log.debug("LongRunningCommand run_command: {0}".format(command_line + ps_script))
-        yield self.get_active_shell()
         try:
             active_shell = yield self.get_active_shell()
         except TimeoutError:
