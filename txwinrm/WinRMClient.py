@@ -214,7 +214,8 @@ class WinRMSession(Session):
             response.deliverBody(reader)
             message = yield reader.d
             if 'maximum number of concurrent operations for this user has been exceeded' in message:
-                message += '  To fix this, increase the MaxConcurrentOperationsPerUser WinRM Configuration option and restart the winrm service.'
+                message += '  To fix this, increase the MaxConcurrentOperationsPerUser WinRM'\
+                           ' Configuration option to 4294967295 and restart the winrm service.'
             raise RequestError("HTTP status: {}. {}".format(
                 response.code, message))
         returnValue(response)

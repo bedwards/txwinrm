@@ -73,25 +73,6 @@ DOMAIN_REALM_TEMPLATE = (
 )
 
 
-class KlistProcessProtocol(ProcessProtocol):
-    """Communicates with klist command.
-
-    This is only to verify the includedir.  If there's an error or specific text
-    we'll discard the includedir
-    """
-
-    def __init__(self):
-        self.d = defer.Deferred()
-        self._error = ''
-
-    def errReceived(self, data):
-        if 'Included profile file could not be read while initializing krb5' in data:
-            self._error = data
-
-    def processEnded(self, reason):
-        self.d.callback(self._error if self._error else None)
-
-
 class Config(object):
     """Manages KRB5_CONFIG."""
 
@@ -105,33 +86,13 @@ class Config(object):
         # For further usage by kerberos python module.
         os.environ['KRB5_CONFIG'] = self.path
 
-    @defer.inlineCallbacks
     def add_includedir(self, includedir):
-        if includedir in self.includedirs:
-            return
-
         self.includedirs.add(includedir)
         self.save()
-        # test for valid directory
-        klist = None
-        for path in ('/usr/bin/klist', '/usr/kerberos/bin/klist'):
-            if os.path.isfile(path):
-                klist = path
-                break
-        klist_args = [klist]
-        klist_env = {
-            'KRB5_CONFIG': self.path,
-        }
 
-        protocol = KlistProcessProtocol()
-
-        reactor.spawnProcess(protocol, klist, klist_args, klist_env)
-
-        results = yield protocol.d
-        if results:
-            self.includedirs.discard(includedir)
-            self.save()
-        defer.returnValue(None)
+    def remove_includedir(self, includedir):
+        self.includedirs.discard(includedir)
+        self.save()
 
     def add_kdc(self, realm, kdcs, disable_rdns=False):
         """Add realm and KDC to KRB5_CONFIG.
@@ -148,6 +109,8 @@ class Config(object):
         if not kdcs or not kdcs.strip():
             return
 
+        # reload currently saved copy
+        self.realms, self.admin_servers = self.load()
         valid_kdcs = []
         remove_kdcs = []
         admin_server = None
@@ -375,7 +338,7 @@ def kinit(username, password, kdc, includedir=None, disable_rdns=False):
     global config
 
     if includedir:
-        yield config.add_includedir(includedir)
+        config.add_includedir(includedir)
     config.add_kdc(realm, kdc, disable_rdns)
 
     ccname = config.get_ccname(username)
@@ -394,6 +357,11 @@ def kinit(username, password, kdc, includedir=None, disable_rdns=False):
     reactor.spawnProcess(protocol, kinit, kinit_args, kinit_env)
 
     results = yield protocol.d
+    if 'Included profile file could not be read while initializing Kerberos 5 library' in results:
+        config.remove_includedir(includedir)
+        retry_protocol = KinitProcessProtocol(password)
+        reactor.spawnProcess(retry_protocol, kinit, kinit_args, kinit_env)
+        results = yield retry_protocol.d
     defer.returnValue(results)
 
 
