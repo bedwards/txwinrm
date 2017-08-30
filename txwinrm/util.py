@@ -681,6 +681,9 @@ class RequestSender(object):
                 reader = _ErrorReader()
             response.deliverBody(reader)
             message = yield reader.d
+            if 'maximum number of concurrent operations for this user has been exceeded' in message:
+                message += '  To fix this, increase the MaxConcurrentOperationsPerUser WinRM'\
+                           ' Configuration option to 4294967295 and restart the winrm service.'
             raise RequestError("HTTP status: {0}. {1}".format(
                 response.code, message))
         defer.returnValue(response)
