@@ -144,6 +144,21 @@ class SessionManager(object):
         # Used to keep track of sessions.
         self._sessions = {}
 
+        # Used to keep track of shells
+        # each host will keep a single shell
+        self._shells = {}
+
+    def get_shell(self, host):
+        return self._shells.get(host, None)
+
+    def add_shell(self, host, shell):
+        self._shells[host] = shell
+
+    def remove_shell(self, host):
+        shell = self.get_shell(host)
+        if shell:
+            self._shells.pop(host)
+
     def get_connection(self, key):
         """Return the session for a given key."""
         if key is None:
@@ -216,6 +231,7 @@ class SessionManager(object):
     @inlineCallbacks
     def deferred_logout(self, key):
         session = self.get_connection(key)
+        self.remove_shell(key[0])
         yield session._deferred_logout()
         returnValue(None)
 

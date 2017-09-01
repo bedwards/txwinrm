@@ -123,6 +123,11 @@ def _find_shell_id(elem):
     return elem.findtext(xpath).strip()
 
 
+def _find_shell_client_ip(elem):
+    xpath = './/{%s}Selector[@Name="ClientIP"]' % c.XML_NS_WS_MAN
+    return elem.findtext(xpath).strip()
+
+
 def _find_command_id(elem):
     xpath = './/{%s}CommandId' % c.XML_NS_MSRSP
     return elem.findtext(xpath).strip()
@@ -234,38 +239,73 @@ def _find_shell_ids(elem):
     return ids
 
 
+@defer.inlineCallbacks
+def _get_active_shells(request_sender):
+    elem = yield request_sender.send_request('enum_shells')
+    enum_context = _find_enum_context(elem)
+    if enum_context is None:
+        defer.returnValue(None)
+    response = yield request_sender.send_request('pull_shells', uuid=enum_context)
+    body = ElementTree.tostring(response)
+    parser, factory = create_parser_and_factory()
+    parser.feed(body)
+    defer.returnValue(factory.items)
+
+
+@defer.inlineCallbacks
+def _get_active_shell(request_sender, conn_info, min_runtime=600):
+    """Sift through existing shells to find what should be the last active shell
+    created by our user.  Compare against minimum runtime so we grab the oldest
+    shell.  something less than min_runtime could have been created by a different
+    client.  sender can be RequestSender or WinRMClient.  conn_info is a
+    txwinrm.util.ConnectionInfo instance
+    """
+    shells = yield _get_active_shells(request_sender)
+    active_shell = None
+
+    user_domain = conn_info.username.split('@')
+    try:
+        # get domain user as netbios
+        user = (user_domain[1].split('.')[0] + '\\' + user_domain[0]).lower()
+    except IndexError:
+        # local user, no netbios
+        # user_domain[0] will always exist
+        user = user_domain[0].lower()
+
+    def get_runtime(runtime):
+        # return total runtime in seconds
+        # ShellRunTime is specified as P<days>DT<hours>H<minutes>M<seconds>S
+        try:
+            rt_match = re.match('P(?P<d>\d+)DT(?P<h>\d+)H(?P<m>\d+)M(?P<s>\d+)S', runtime)
+            return int(rt_match.group('s')) + (int(rt_match.group('m')) * 60) + (int(rt_match.group('h')) * 3600) + (int(rt_match.group('d')) * 86400)
+        except Exception:
+            return 0
+
+    for shell in shells:
+        if user == shell.Owner.lower():
+            runtime = get_runtime(shell.ShellRunTime)
+            if runtime > min_runtime:
+                # found possible candidate, test against previous
+                if active_shell is not None:
+                    prev_runtime = get_runtime(active_shell.ShellRunTime)
+                    if runtime > prev_runtime:
+                        active_shell = shell
+                else:
+                    active_shell = shell
+    defer.returnValue(active_shell)
+
+
 class LongRunningCommand(object):
 
-    def __init__(self, sender):
+    def __init__(self, sender, min_runtime=600):
         self._sender = sender
         self._shell_id = None
         self._command_id = None
         self._exit_code = None
 
-    @defer.inlineCallbacks
-    def get_active_shell(self):
-        elem = yield self._sender.send_request('enum_shells')
-        enum_context = _find_enum_context(elem)
-        if enum_context is None:
-            defer.returnValue(False)
-        response = yield self._sender.send_request('pull_shells', uuid=enum_context)
-        body = ElementTree.tostring(response)
-        parser, factory = create_parser_and_factory()
-        parser.feed(body)
-        user_domain = self._sender._sender._conn_info.username.split('@')
-        try:
-            # get domain user as netbios
-            user = (user_domain[1].split('.')[0] + '\\' + user_domain[0]).lower()
-        except IndexError:
-            # local user, no netbios
-            # user_domain[0] will always exist
-            user = user_domain[0].lower()
-        found_shell = False
-        for shell in factory.items:
-            if user == shell.Owner.lower():
-                self._shell_id = shell.ShellId
-                found_shell = True
-        defer.returnValue(found_shell)
+        # attach to shell with a minimum runtime of x seconds to know
+        # that our user created the shell
+        self._min_runtime = min_runtime
 
     @defer.inlineCallbacks
     def is_shell_active(self, shell_id):
@@ -285,14 +325,19 @@ class LongRunningCommand(object):
     @defer.inlineCallbacks
     def start(self, command_line, ps_script=None):
         log.debug("LongRunningCommand run_command: {0}".format(command_line + ps_script))
-        try:
-            active_shell = yield self.get_active_shell()
-        except TimeoutError:
-            yield self._sender.close_connections()
-            raise
-        if active_shell is False:
-            elem = yield self._sender.send_request('create')
-            self._shell_id = _find_shell_id(elem)
+        if self._shell_id is None:
+            try:
+                shell = yield _get_active_shell(self._sender,
+                                                self._sender._sender._conn_info,
+                                                min_runtime=self._min_runtime)
+            except TimeoutError:
+                yield self._sender.close_connections()
+                raise
+            if shell is None:
+                elem = yield self._sender.send_request('create')
+                self._shell_id = _find_shell_id(elem)
+            else:
+                self._shell_id = shell.ShellId
         if ps_script is not None:
             command_line_elem = _build_ps_command_line_elem(command_line, ps_script)
         else:
@@ -309,6 +354,7 @@ class LongRunningCommand(object):
             yield self._sender.close_connections()
             raise
         self._command_id = _find_command_id(command_elem)
+        defer.returnValue(self._command_id)
 
     @defer.inlineCallbacks
     def receive(self):
