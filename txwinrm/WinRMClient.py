@@ -344,11 +344,8 @@ class WinRMClient(object):
             # create new shell
             elem = yield self.send_request('create')
             shell = create_shell_from_elem(elem)
-            self._shell_id = shell.ShellId
-            # save shell to Session Manager
-        else:
-            self._shell_id = shell.ShellId
-            # update current shell if needed
+        self._shell_id = shell.ShellId
+        # save shell
         SESSION_MANAGER.add_shell(self._conn_info.ipaddress, shell)
         returnValue(self._shell_id)
 
