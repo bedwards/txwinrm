@@ -123,11 +123,6 @@ def _find_shell_id(elem):
     return elem.findtext(xpath).strip()
 
 
-def _find_shell_client_ip(elem):
-    xpath = './/{%s}Selector[@Name="ClientIP"]' % c.XML_NS_WS_MAN
-    return elem.findtext(xpath).strip()
-
-
 def _find_command_id(elem):
     xpath = './/{%s}CommandId' % c.XML_NS_MSRSP
     return elem.findtext(xpath).strip()
@@ -275,6 +270,9 @@ def _get_active_shell(request_sender, conn_info, min_runtime=600):
     def get_runtime(runtime):
         # return total runtime in seconds
         # ShellRunTime is specified as P<days>DT<hours>H<minutes>M<seconds>S
+        # e.g. P1DT1H1M1S is a runtime of of 1 day, 1 hour, 1 minute, and 1 second
+        # we'll calculate the total number of seconds a shell has been running using
+        # these numbers
         try:
             rt_match = re.match('P(?P<d>\d+)DT(?P<h>\d+)H(?P<m>\d+)M(?P<s>\d+)S', runtime)
             return int(rt_match.group('s')) + (int(rt_match.group('m')) * 60) + (int(rt_match.group('h')) * 3600) + (int(rt_match.group('d')) * 86400)

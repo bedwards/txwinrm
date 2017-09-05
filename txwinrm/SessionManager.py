@@ -142,10 +142,13 @@ class SessionManager(object):
 
     def __init__(self):
         # Used to keep track of sessions.
+        # a session entry uses a key that is a tuple
+        # of (ipaddress, some_other_content)
         self._sessions = {}
 
         # Used to keep track of shells
         # each host will keep a single shell
+        # store shells by ipaddress
         self._shells = {}
 
     def get_shell(self, host):
@@ -230,8 +233,11 @@ class SessionManager(object):
 
     @inlineCallbacks
     def deferred_logout(self, key):
+        # first, get the session from the key
         session = self.get_connection(key)
+        # remove shell based on ipaddress from key
         self.remove_shell(key[0])
+        # close current connection and do cleanup for session
         yield session._deferred_logout()
         returnValue(None)
 

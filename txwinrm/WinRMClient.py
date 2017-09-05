@@ -335,6 +335,7 @@ class WinRMClient(object):
     @inlineCallbacks
     def _create_shell(self):
         # first, check to see if we have an existing shell
+        # any errors will be raised from send_request call(s)
         shell = SESSION_MANAGER.get_shell(self._conn_info.ipaddress)
         if shell is None:
             # check for oldest active shell next
@@ -345,11 +346,10 @@ class WinRMClient(object):
             shell = create_shell_from_elem(elem)
             self._shell_id = shell.ShellId
             # save shell to Session Manager
-            SESSION_MANAGER.add_shell(self._conn_info.ipaddress, shell)
         else:
             self._shell_id = shell.ShellId
             # update current shell if needed
-            SESSION_MANAGER.add_shell(self._conn_info.ipaddress, shell)
+        SESSION_MANAGER.add_shell(self._conn_info.ipaddress, shell)
         returnValue(self._shell_id)
 
     @inlineCallbacks
