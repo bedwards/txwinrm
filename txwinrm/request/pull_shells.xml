@@ -28,7 +28,7 @@
          xmlns:wsen="http://schemas.xmlsoap.org/ws/2004/09/enumeration">
          uuid:{uuid}
          </wsen:EnumerationContext>
-       <wsen:MaxElements>5</wsen:MaxElements>
+       <wsen:MaxElements>100</wsen:MaxElements>
      </wsen:Pull>
    </s:Body>
  </s:Envelope>

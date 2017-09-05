@@ -46,7 +46,6 @@ from .util import (
     ET,
 )
 from .shell import (
-    _find_shell_id,
     _build_command_line_elem,
     _build_ps_command_line_elem,
     _find_command_id,
@@ -55,18 +54,34 @@ from .shell import (
     _find_exit_code,
     CommandResponse,
     _stripped_lines,
-    _find_enum_context
+    _get_active_shell,
+    _get_active_shells
 )
 from .enumerate import (
     DEFAULT_RESOURCE_URI,
     SaxResponseHandler,
-    create_parser_and_factory,
-    _MAX_REQUESTS_PER_ENUMERATION
+    _MAX_REQUESTS_PER_ENUMERATION,
+    ItemsAccumulator
 )
 from .SessionManager import SESSION_MANAGER, Session
 from .twisted_utils import with_timeout
 kerberos = None
 LOG = logging.getLogger('winrm')
+
+
+def create_shell_from_elem(elem):
+    accumulator = ItemsAccumulator()
+    accumulator.new_item()
+    for item in ['ShellId', 'Owner', 'ClientIP', 'ShellRunTime', 'ShellInactivity', 'IdleTimeOut']:
+        xpath = './/{{{}}}{}'.format(c.XML_NS_MSRSP, item)
+        try:
+            accumulator.add_property(item, elem.findtext(xpath).strip())
+        except AttributeError as e:
+            if item == 'ShellId':
+                raise Exception('Invalid response from create shell request: {}'.format(e))
+            # as long as we have a valid ShellId we should be fine
+            accumulator.add_property(item, '')
+    return accumulator.items[0]
 
 
 class WinRMSession(Session):
@@ -283,12 +298,14 @@ class WinRMClient(object):
 
     Contains core functionality for various types of winrm based clients
     """
-    def __init__(self, conn_info):
+    def __init__(self, conn_info, min_runtime=600, delete_shell=False):
         verify_conn_info(conn_info)
         self.key = None
         self._conn_info = conn_info
         self.ps_script = None
         self._shell_id = None
+        self._min_runtime = min_runtime
+        self._del_shell = delete_shell
 
     def _session(self):
         return SESSION_MANAGER.get_connection(self.key)
@@ -316,41 +333,25 @@ class WinRMClient(object):
         returnValue(response)
 
     @inlineCallbacks
-    def get_active_shell(self):
-        elem = yield self.send_request('enum_shells')
-        enum_context = _find_enum_context(elem)
-        if enum_context is None:
-            returnValue(False)
-        response = yield self.send_request('pull_shells', uuid=enum_context)
-        body = ET.tostring(response)
-        parser, factory = create_parser_and_factory()
-        parser.feed(body)
-        # shell owner is in netbios format DOMAIN\user or just local user
-        user_domain = self._conn_info.username.split('@')
-        try:
-            # get domain user as netbios
-            user = (user_domain[1].split('.')[0] + '\\' + user_domain[0]).lower()
-        except IndexError:
-            # local user, no netbios
-            user = user_domain[0].lower()
-        found_shell = False
-        for shell in factory.items:
-            if user == shell.Owner.lower():
-                self._shell_id = shell.ShellId
-                found_shell = True
-        returnValue(found_shell)
-
-    @inlineCallbacks
     def _create_shell(self):
-        # check for active shell first
-        active_shell = yield self.get_active_shell()
-        if active_shell is False:
+        # first, check to see if we have an existing shell
+        # any errors will be raised from send_request call(s)
+        shell = SESSION_MANAGER.get_shell(self._conn_info.ipaddress)
+        if shell is None:
+            # check for oldest active shell next
+            shell = yield _get_active_shell(self, self._conn_info, min_runtime=self._min_runtime)
+        if shell is None:
+            # create new shell
             elem = yield self.send_request('create')
-            self._shell_id = _find_shell_id(elem)
+            shell = create_shell_from_elem(elem)
+        self._shell_id = shell.ShellId
+        # save shell
+        SESSION_MANAGER.add_shell(self._conn_info.ipaddress, shell)
         returnValue(self._shell_id)
 
     @inlineCallbacks
     def _delete_shell(self, shell_id):
+        SESSION_MANAGER.remove_shell(self._conn_info.ipaddress)
         yield self.send_request('delete', shell_id=shell_id)
         returnValue(None)
 
@@ -397,8 +398,8 @@ class WinRMClient(object):
 
 class SingleCommandClient(WinRMClient):
     """Client to send a single command to a winrm device"""
-    def __init__(self, conn_info):
-        super(SingleCommandClient, self).__init__(conn_info)
+    def __init__(self, conn_info, min_runtime=600, delete_shell=False):
+        super(SingleCommandClient, self).__init__(conn_info, min_runtime=min_runtime, delete_shell=delete_shell)
         self.key = (self._conn_info.ipaddress, 'short')
 
     @inlineCallbacks
@@ -440,6 +441,8 @@ class SingleCommandClient(WinRMClient):
             cmd_response = yield self._run_command(self._shell_id, command_line)
         except TimeoutError:
             self.close_connection()
+        if self._del_shell:
+            self._delete_shell(self._shell_id)
         self.close_connection()
         returnValue(cmd_response)
 
