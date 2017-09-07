@@ -357,11 +357,15 @@ def kinit(username, password, kdc, includedir=None, disable_rdns=False):
     reactor.spawnProcess(protocol, kinit, kinit_args, kinit_env)
 
     results = yield protocol.d
-    if 'Included profile file could not be read while initializing Kerberos 5 library' in results:
-        config.remove_includedir(includedir)
-        retry_protocol = KinitProcessProtocol(password)
-        reactor.spawnProcess(retry_protocol, kinit, kinit_args, kinit_env)
-        results = yield retry_protocol.d
+    try:
+        if 'Included profile file could not be read while initializing Kerberos 5 library' in results:
+            config.remove_includedir(includedir)
+            retry_protocol = KinitProcessProtocol(password)
+            reactor.spawnProcess(retry_protocol, kinit, kinit_args, kinit_env)
+            results = yield retry_protocol.d
+    except TypeError:
+        # Everything's ok
+        pass
     defer.returnValue(results)
 
 
