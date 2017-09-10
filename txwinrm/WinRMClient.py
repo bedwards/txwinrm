@@ -54,8 +54,7 @@ from .shell import (
     _find_exit_code,
     CommandResponse,
     _stripped_lines,
-    _get_active_shell,
-    _get_active_shells
+    _find_shell_id
 )
 from .enumerate import (
     DEFAULT_RESOURCE_URI,
@@ -174,11 +173,11 @@ class WinRMSession(Session):
         # gssclient will no longer be valid so get rid of it
         # set token to None so the next client will reinitialize
         #   the connection
-        yield self.close_cached_connections()
         if self._gssclient is not None:
             self._gssclient.cleanup()
             self._gssclient = None
         self._token = None
+        yield self.close_cached_connections()
         returnValue(None)
 
     @inlineCallbacks
@@ -192,6 +191,7 @@ class WinRMSession(Session):
             if self._gssclient is not None:
                 self._gssclient.cleanup()
                 self._gssclient = None
+                self._token = None
                 yield SESSION_MANAGER.init_connection(client, WinRMSession)
                 try:
                     yield self._set_headers()
@@ -231,8 +231,8 @@ class WinRMSession(Session):
             if 'maximum number of concurrent operations for this user has been exceeded' in message:
                 message += '  To fix this, increase the MaxConcurrentOperationsPerUser WinRM'\
                            ' Configuration option to 4294967295 and restart the winrm service.'
-            raise RequestError("HTTP status: {}. {}".format(
-                response.code, message))
+            raise RequestError("{}: HTTP status: {}. {}.".format(
+                client._conn_info.ipaddress, response.code, message))
         returnValue(response)
 
     @inlineCallbacks
@@ -298,17 +298,18 @@ class WinRMClient(object):
 
     Contains core functionality for various types of winrm based clients
     """
-    def __init__(self, conn_info, min_runtime=600, delete_shell=False):
+    def __init__(self, conn_info):
         verify_conn_info(conn_info)
         self.key = None
         self._conn_info = conn_info
         self.ps_script = None
         self._shell_id = None
-        self._min_runtime = min_runtime
-        self._del_shell = delete_shell
+        self._session = None
 
-    def _session(self):
-        return SESSION_MANAGER.get_connection(self.key)
+    def session(self):
+        if self._session is None:
+            self._session = SESSION_MANAGER.get_connection(self.key)
+        return self._session
 
     @inlineCallbacks
     def init_connection(self):
@@ -320,38 +321,27 @@ class WinRMClient(object):
         return self._conn_info.auth_type == 'kerberos'
 
     def decrypt_body(self, body):
-        return self._session().decrypt_body(body)
+        return self.session().decrypt_body(body)
 
     @inlineCallbacks
     def send_request(self, request, **kwargs):
-        if not self._session():
+        if self.session() is None or self._session._token is None\
+                or (self._session.is_kerberos() and self._session._gssclient is None):
             yield self.init_connection()
 
-        if not self._session():
+        if not self.session():
             raise Exception('Could not connect to device {}'.format(self.conn_info.hostname))
-        response = yield self._session().send_request(request, self, **kwargs)
+        response = yield self.session().send_request(request, self, **kwargs)
         returnValue(response)
 
     @inlineCallbacks
     def _create_shell(self):
-        # first, check to see if we have an existing shell
-        # any errors will be raised from send_request call(s)
-        shell = SESSION_MANAGER.get_shell(self._conn_info.ipaddress)
-        if shell is None:
-            # check for oldest active shell next
-            shell = yield _get_active_shell(self, self._conn_info, min_runtime=self._min_runtime)
-        if shell is None:
-            # create new shell
-            elem = yield self.send_request('create')
-            shell = create_shell_from_elem(elem)
-        self._shell_id = shell.ShellId
-        # save shell
-        SESSION_MANAGER.add_shell(self._conn_info.ipaddress, shell)
+        elem = yield self.send_request('create')
+        self._shell_id = _find_shell_id(elem)
         returnValue(self._shell_id)
 
     @inlineCallbacks
     def _delete_shell(self, shell_id):
-        SESSION_MANAGER.remove_shell(self._conn_info.ipaddress)
         yield self.send_request('delete', shell_id=shell_id)
         returnValue(None)
 
@@ -395,11 +385,15 @@ class WinRMClient(object):
     def close_connection(self):
         SESSION_MANAGER.close_connection(self)
 
+    @inlineCallbacks
+    def close_cached_connections(self):
+        yield self.session().close_cached_connections()
+
 
 class SingleCommandClient(WinRMClient):
     """Client to send a single command to a winrm device"""
-    def __init__(self, conn_info, min_runtime=600, delete_shell=False):
-        super(SingleCommandClient, self).__init__(conn_info, min_runtime=min_runtime, delete_shell=delete_shell)
+    def __init__(self, conn_info):
+        super(SingleCommandClient, self).__init__(conn_info)
         self.key = (self._conn_info.ipaddress, 'short')
 
     @inlineCallbacks
@@ -416,7 +410,7 @@ class SingleCommandClient(WinRMClient):
         self.ps_script = ps_script
         yield self.init_connection()
         try:
-            cmd_response = yield self._session().semrun(
+            cmd_response = yield self.session().semrun(
                 self.run_single_command,
                 command_line)
         except Exception:
@@ -440,9 +434,7 @@ class SingleCommandClient(WinRMClient):
         try:
             cmd_response = yield self._run_command(self._shell_id, command_line)
         except TimeoutError:
-            self.close_connection()
-        if self._del_shell:
-            self._delete_shell(self._shell_id)
+            yield self.close_cached_connections()
         self.close_connection()
         returnValue(cmd_response)
 
@@ -466,6 +458,7 @@ class SingleCommandClient(WinRMClient):
         yield self._signal_terminate(shell_id, command_id)
         stdout = _stripped_lines(stdout_parts)
         stderr = _stripped_lines(stderr_parts)
+        yield self._delete_shell(self._shell_id)
         returnValue(CommandResponse(stdout, stderr, exit_code))
 
 
@@ -498,8 +491,7 @@ class LongCommandClient(WinRMClient):
         self.key = (self._conn_info.ipaddress, command_line + str(ps_script))
         self.ps_script = ps_script
         yield self.init_connection()
-        if self._shell_id is None:
-            self._shell_id = yield self._create_shell()
+        self._shell_id = yield self._create_shell()
         try:
             command_elem = yield self._send_command(self._shell_id,
                                                     command_line)
@@ -554,7 +546,7 @@ class EnumerateClient(WinRMClient):
     @inlineCallbacks
     def enumerate(self, wql, resource_uri=DEFAULT_RESOURCE_URI):
         """Runs a remote WQL query."""
-        if self._session() is None:
+        if self.session() is None:
             yield self.init_connection()
         request_template_name = 'enumerate'
         enumeration_context = None
@@ -563,7 +555,7 @@ class EnumerateClient(WinRMClient):
             for i in xrange(_MAX_REQUESTS_PER_ENUMERATION):
                 LOG.info('{0} "{1}" {2}'.format(
                     self._hostname, wql, request_template_name))
-                response = yield self._session()._send_request(
+                response = yield self.session()._send_request(
                     request_template_name,
                     self,
                     resource_uri=resource_uri,
@@ -597,7 +589,7 @@ class EnumerateClient(WinRMClient):
         yield self.init_connection()
         for enum_info in enum_infos:
             try:
-                items[enum_info] = yield self._session().semrun(
+                items[enum_info] = yield self.session().semrun(
                     self.enumerate,
                     enum_info.wql,
                     enum_info.resource_uri)
