@@ -12,8 +12,8 @@ import cmd
 from pprint import pprint
 from twisted.internet import reactor, defer, task, threads
 from . import app
-from .shell import create_remote_shell
-from .WinRMClient import SingleCommandClient, LongCommandClient
+from .shell import create_remote_shell, create_long_running_command
+from .WinRMClient import SingleCommandClient
 
 
 def print_output(stdout, stderr):
@@ -57,7 +57,7 @@ class WinrsCmd(cmd.Cmd):
 @defer.inlineCallbacks
 def long_running_main(args):
     try:
-        client = LongCommandClient(args.conn_info)
+        client = create_long_running_command(args.conn_info)
         yield client.start(args.command)
         for i in xrange(5):
             stdout, stderr = yield task.deferLater(

@@ -95,17 +95,19 @@ class Session(object):
         """Calls session._deferred_logout() only if all other clients
         using the same session have also called deferred_logout.
         """
+        # we still have clients running, don't logout
+        if self._clients:
+            returnValue(None)
+
         if self._token:
             try:
+                # go ahead and clear the token
+                self._token = None
+
                 yield self._deferred_logout()
             except Exception:
                 pass
 
-        # make sure we don't have a token
-        self._token = None
-
-        # clients should have been discarded, but just to be sure
-        self._clients.clear()
         returnValue(None)
 
     @inlineCallbacks
@@ -144,23 +146,8 @@ class SessionManager(object):
         # Used to keep track of sessions.
         # a session entry uses a key that is a tuple
         # of (ipaddress, some_other_content)
+
         self._sessions = {}
-
-        # Used to keep track of shells
-        # each host will keep a single shell
-        # store shells by ipaddress
-        self._shells = {}
-
-    def get_shell(self, host):
-        return self._shells.get(host, None)
-
-    def add_shell(self, host, shell):
-        self._shells[host] = shell
-
-    def remove_shell(self, host):
-        shell = self.get_shell(host)
-        if shell:
-            self._shells.pop(host)
 
     def get_connection(self, key):
         """Return the session for a given key."""
@@ -194,6 +181,10 @@ class SessionManager(object):
 
         session = self.get_connection(client.key)
         if session is not None:
+            try:
+                session._logout_dc.cancel()
+            except Exception:
+                pass
             # add client to set
             session._clients.add(client)
             # update conn_info in case something changed
@@ -229,14 +220,12 @@ class SessionManager(object):
         except Exception:
             pass
         session._clients.discard(client)
-        session._logout_dc = reactor.callLater(60, self.deferred_logout, key)
+        session._logout_dc = reactor.callLater(65, self.deferred_logout, key)
 
     @inlineCallbacks
     def deferred_logout(self, key):
         # first, get the session from the key
         session = self.get_connection(key)
-        # remove shell based on ipaddress from key
-        self.remove_shell(key[0])
         # close current connection and do cleanup for session
         yield session._deferred_logout()
         returnValue(None)
