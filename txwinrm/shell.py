@@ -249,7 +249,7 @@ def _get_active_shells(request_sender):
 
 @defer.inlineCallbacks
 def _get_active_shell(request_sender, conn_info, min_runtime=600):
-    """Sift through existing shells to find what should be the last active shell
+    """Sift through existing shells to find what should be the oldest active shell
     created by our user.  Compare against minimum runtime so we grab the oldest
     shell.  something less than min_runtime could have been created by a different
     client.  sender can be RequestSender or WinRMClient.  conn_info is a
@@ -323,19 +323,8 @@ class LongRunningCommand(object):
     @defer.inlineCallbacks
     def start(self, command_line, ps_script=None):
         log.debug("LongRunningCommand run_command: {0}".format(command_line + ps_script))
-        if self._shell_id is None:
-            try:
-                shell = yield _get_active_shell(self._sender,
-                                                self._sender._sender._conn_info,
-                                                min_runtime=self._min_runtime)
-            except TimeoutError:
-                yield self._sender.close_connections()
-                raise
-            if shell is None:
-                elem = yield self._sender.send_request('create')
-                self._shell_id = _find_shell_id(elem)
-            else:
-                self._shell_id = shell.ShellId
+        elem = yield self._sender.send_request('create')
+        self._shell_id = _find_shell_id(elem)
         if ps_script is not None:
             command_line_elem = _build_ps_command_line_elem(command_line, ps_script)
         else:
@@ -362,8 +351,17 @@ class LongRunningCommand(object):
                 shell_id=self._shell_id,
                 command_id=self._command_id)
         except TimeoutError:
+            # could be simple network problem, reconnect and try again
             yield self._sender.close_connections()
-            raise
+            try:
+                receive_elem = yield self._sender.send_request(
+                    'receive',
+                    shell_id=self._shell_id,
+                    command_id=self._command_id)
+            except TimeoutError:
+                yield self._sender.close_connections()
+            except Exception:
+                raise
         stdout_parts = _find_stream(receive_elem, self._command_id, 'stdout')
         stderr_parts = _find_stream(receive_elem, self._command_id, 'stderr')
         self._exit_code = _find_exit_code(receive_elem, self._command_id)
@@ -380,24 +378,19 @@ class LongRunningCommand(object):
                     shell_id=self._shell_id,
                     command_id=self._command_id,
                     signal_code=c.SHELL_SIGNAL_CTRL_C)
-            except RequestError as e:
-                # if we get a 500 error back, let's try again
-                if 'HTTP status: 500. An internal error occurred' in e.message:
-                    pass
-                else:
-                    yield self._sender.close_connections()
-                    raise e
-            except Exception:
-                yield self._sender.close_connections()
-                raise
-            else:
                 break
+            except TimeoutError:
+                # we may need to reset the connection and try again
+                yield self._sender.close_connections()
+            except Exception:
+                pass
         try:
             stdout, stderr = yield self.receive()
         except TimeoutError:
             # close_connections done in receive() for TimeoutError
             raise
         except RequestError:
+            yield self._sender.send_request('delete', shell_id=self._shell_id)
             yield self._sender.close_connections()
             self._shell_id = None
             defer.returnValue(CommandResponse([], [], 0))
@@ -409,6 +402,7 @@ class LongRunningCommand(object):
                 signal_code=c.SHELL_SIGNAL_TERMINATE)
         except RequestError:
             pass
+        yield self._sender.send_request('delete', shell_id=self._shell_id)
         yield self._sender.close_connections()
         self._shell_id = None
         defer.returnValue(CommandResponse(stdout, stderr, self._exit_code))

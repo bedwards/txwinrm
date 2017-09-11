@@ -625,10 +625,7 @@ class RequestSender(object):
         @defer.inlineCallbacks
         def reset_agent_resend(sender, request, body_producer):
             yield self.close_connections()
-            if sender.gssclient is not None:
-                # do some cleanup first.  memory leaks were occurring
-                sender.gssclient.cleanup()
-                sender.gssclient = None
+            if sender.is_kerberos():
                 try:
                     yield sender._set_url_and_headers()
                     encrypted_request = sender.gssclient.encrypt_body(request)
@@ -698,7 +695,9 @@ class RequestSender(object):
         elif self.agent:
             # twisted 12 returns a Deferred from the pool
             yield self.agent._pool.closeCachedConnections()
-        # no agent
+        if self.gssclient is not None:
+            self.gssclient.cleanup()
+            self.gssclient = None
         defer.returnValue(None)
 
 
