@@ -322,12 +322,13 @@ class LongRunningCommand(object):
 
     @defer.inlineCallbacks
     def start(self, command_line, ps_script=None):
-        log.debug("LongRunningCommand run_command: {0}".format(command_line + ps_script))
         elem = yield self._sender.send_request('create')
         self._shell_id = _find_shell_id(elem)
         if ps_script is not None:
+            log.debug("LongRunningCommand run_command: {0}".format(command_line + ps_script))
             command_line_elem = _build_ps_command_line_elem(command_line, ps_script)
         else:
+            log.debug("LongRunningCommand run_command: {0}".format(command_line))
             command_line_elem = _build_command_line_elem(command_line)
         log.debug('LongRunningCommand run_command: sending command request '
                   '(shell_id={0}, command_line_elem={1})'.format(
