@@ -238,13 +238,14 @@ WinRS
 The winrs program has four modes of operation:
 
 -  interactive (default): Execute many commands in an interactive command
-   prompt on the remote host
+   prompt on the remote host.  PowerShell will not work in this mode.
 -  single: Execute a single command and return its output
 -  long: Execute a single long-running command like
    'typeperf -si 1' and check the output periodically
 -  batch: Opens a command prompt on the remote system and
    executes a list of commands (actually right now it executes one
    command twice as a proof-of-concept)
+-  powershell: Run a powershell script.  This is NOT interactive.
 
 
 An example of interactive mode
@@ -330,6 +331,25 @@ An example of batch
     Exit code of shell on oakland: 0
 
 
+An example of powershell
+
+::
+
+  $ winrs powershell -u Administrator -r 10.10.10.10 -x "get-counter -counter '\Memory\Pages/sec'"
+    Timestamp                 CounterSamples
+    ---------                 --------------
+    12/19/2017 11:54:27 AM    \\myserver\memory\pages/sec :
+    0
+
+Be sure not to include newlines in your powershell script as it is sent to a
+Windows command line (cmd.exe).  The command line character length is capped
+at 8192.  The powershell command is 55 characters, which leaves 8137 for your
+script.  This mode is effectively the same as:
+
+::
+  $ winrs single -u Administrator -r 10.10.10.10 -x "powershell -NoLogo -NonInteractive -NoProfile -Command \"get-counter -counter '\Memory\Pages/sec'\" "
+
+
 Usage
 
 ::
@@ -339,10 +359,10 @@ Usage
                     [--dcip DCIP] [--keytab KEYTAB] [--password PASSWORD]
                     [--ipaddress IPADDRESS] [--service SERVICE]
                     [--includedir INCLUDEDIR] [--command COMMAND]
-                    [{interactive,single,batch,long,multiple}]
+                    [{interactive,single,batch,long,multiple,powershell}]
 
     positional arguments:
-      {interactive,single,batch,long,multiple}
+      {interactive,single,batch,long,multiple,powershell}
 
     optional arguments:
       -h, --help            show this help message and exit

@@ -109,6 +109,22 @@ def single_shot_main(args):
         app.stop_reactor()
 
 
+@defer.inlineCallbacks
+def powershell_main(args):
+    try:
+        client = create_long_running_command(args.conn_info)
+        yield client.start('powershell -NoLogo -NonInteractive -NoProfile -Command ', args.command)
+        while True:
+            stdout, stderr = yield task.deferLater(
+                reactor, 1, client.receive)
+            print_output(stdout, stderr)
+            if client._exit_code is not None:
+                break
+        yield client.stop()
+    finally:
+        app.stop_reactor()
+
+
 class WinrsUtility(object):
 
     def tx_main(self, args, config):
@@ -118,17 +134,19 @@ class WinrsUtility(object):
             single_shot_main(args)
         elif args.kind == "batch":
             batch_main(args)
+        elif args.kind == 'powershell':
+            powershell_main(args)
         else:
             interactive_main(args)
 
     def add_args(self, parser):
         parser.add_argument(
             "kind", nargs='?', default="interactive",
-            choices=["interactive", "single", "batch", "long", "multiple"])
+            choices=["interactive", "single", "batch", "long", "multiple", "powershell"])
         parser.add_argument("--command", "-x")
 
     def check_args(self, args):
-        if not args.command and args.kind in ["single", "batch", "long", "multiple"]:
+        if not args.command and args.kind in ["single", "batch", "long", "multiple", "powershell"]:
             print >>sys.stderr, \
                 "ERROR: {0} requires that you specify a command."
             return False
