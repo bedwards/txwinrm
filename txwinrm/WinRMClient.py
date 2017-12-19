@@ -205,8 +205,9 @@ class WinRMSession(Session):
                     raise e
             if response.code == UNAUTHORIZED:
                 if self.is_kerberos():
-                    if not kerberos:
-                        from .util import kerberos
+                    global kerberos
+                    if kerberos is None:
+                        import kerberos
                     auth_header = response.headers.getRawHeaders('WWW-Authenticate')[0]
                     auth_details = get_auth_details(auth_header)
                     try:
