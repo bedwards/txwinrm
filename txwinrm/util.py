@@ -246,7 +246,7 @@ class AuthGSSClient(object):
             (which may be empty for the first step).
         @return:          a result code
         """
-        log.debug('GSSAPI step challenge="{0}"'.format(challenge))
+        log.debug('{} GSSAPI step challenge="{}"'.format(self._conn_info.hostname, challenge))
         return deferToThread(kerberos.authGSSClientStep, self._context, challenge)
 
     @defer.inlineCallbacks
@@ -265,7 +265,7 @@ class AuthGSSClient(object):
                 if msg == 'Cannot determine realm for numeric host address':
                     raise Exception(msg)
                 elif msg == 'Server not found in Kerberos database':
-                    raise Exception(msg + ': ' + self._service)
+                    raise Exception(msg + ': Attempted to get ticket for {}.  Ensure reverse DNS is correct.'.format(self._service))
                 log.debug('{0}. Calling kinit.'.format(msg))
                 kinit_result = yield kinit(self._username,
                                            self._password,
@@ -606,8 +606,8 @@ class RequestSender(object):
 
     @defer.inlineCallbacks
     def send_request(self, request_template_name, **kwargs):
-        log.debug('sending request: {0} {1}'.format(
-            request_template_name, kwargs))
+        log.debug('sending request on {}: {} {}'.format(self._conn_info.hostname,
+                  request_template_name, kwargs))
         kwargs['envelope_size'] = getattr(self._conn_info, 'envelope_size', 512000)
         kwargs['locale'] = getattr(self._conn_info, 'locale', 'en-US')
         kwargs['code_page'] = getattr(self._conn_info, 'code_page', 65001)
@@ -624,6 +624,9 @@ class RequestSender(object):
 
         @defer.inlineCallbacks
         def reset_agent_resend(sender, request, body_producer):
+            log.debug('resetting connection on {} and resending last request: {}'.format(
+                      self._conn_info.hostname,
+                      request))
             yield self.close_connections()
             if sender.is_kerberos():
                 try:
@@ -646,14 +649,16 @@ class RequestSender(object):
                 'POST', self._url, self._headers, body_producer)
         except ConnectError:
             # network timeout.  could be stale connection, so let's reset
+            log.debug('{} received ConnectError'.format(self._conn_info.hostname))
             response = yield reset_agent_resend(self, request, body_producer)
         except Exception as e:
             raise e
 
-        log.debug('received response {0} {1}'.format(
-            response.code, request_template_name))
+        log.debug('{} received response {} {}'.format(self._conn_info.hostname,
+                  response.code, request_template_name))
         if response.code == httplib.UNAUTHORIZED or response.code == httplib.BAD_REQUEST:
             # check to see if we need to re-authorize due to lost connection or bad request error
+            log.debug('{} received UNAUTHORIZED or BAD_REQUEST'.format(self._conn_info.hostname))
             response = yield reset_agent_resend(self, request, body_producer)
             if response.code == httplib.UNAUTHORIZED:
                 if self.is_kerberos():
