@@ -272,8 +272,8 @@ class WinRMSession(Session):
             # check for a reconnection attempt so we do not send any requests
             # to a dead connection
             yield self._login_d
-        LOG.debug('sending request: {0} {1}'.format(
-            request_template_name, kwargs))
+        LOG.debug('{} sending request: {} {}'.format(
+            client._conn_info.hostname, request_template_name, kwargs))
         request = _get_request_template(request_template_name).format(**kwargs)
         self._headers = self._set_headers()
         if self.is_kerberos():
@@ -287,9 +287,10 @@ class WinRMSession(Session):
             response = yield self._agent.request(
                 'POST', self._url, self._headers, body_producer)
         except Exception as e:
+            LOG.debug('{} exception sending request: {}'.format(client._conn_info.hostname, e))
             raise e
-        LOG.debug('received response {0} {1}'.format(
-            response.code, request_template_name))
+        LOG.debug('{} received response {} {}'.format(
+            client._conn_info.hostname, response.code, request_template_name))
         response = yield self.handle_response(request, response, client)
         returnValue(response)
 
@@ -369,9 +370,9 @@ class WinRMClient(object):
                                                             self.ps_script)
         else:
             command_line_elem = _build_command_line_elem(command_line)
-        LOG.debug('WinRMClient._send_command: sending command request '
-                  '(shell_id={0}, command_line_elem={1})'.format(
-                      shell_id, command_line_elem))
+        LOG.debug('{} WinRMClient._send_command: sending command request '
+                  '(shell_id={}, command_line_elem={})'.format(
+                      self._conn_info.hostname, shell_id, command_line_elem))
         command_elem = yield self.send_request(
             'command', shell_id=shell_id, command_line_elem=command_line_elem,
             timeout=self._conn_info.timeout)
@@ -488,7 +489,7 @@ class LongCommandClient(WinRMClient):
         ps_script='"& {get-counter -counter \\\"\memory\pages output/sec\\\" }"'
 
         """
-        LOG.debug("LongRunningCommand run_command: {0}".format(command_line))
+        LOG.debug("{} LongRunningCommand run_command: {}".format(self._conn_info.hostname, command_line))
         self.key = (self._conn_info.ipaddress, command_line + str(ps_script))
         self.ps_script = ps_script
         yield self.init_connection()
@@ -554,7 +555,7 @@ class EnumerateClient(WinRMClient):
         items = []
         try:
             for i in xrange(_MAX_REQUESTS_PER_ENUMERATION):
-                LOG.info('{0} "{1}" {2}'.format(
+                LOG.debug('{0} "{1}" {2}'.format(
                     self._hostname, wql, request_template_name))
                 response = yield self.session()._send_request(
                     request_template_name,
@@ -562,7 +563,7 @@ class EnumerateClient(WinRMClient):
                     resource_uri=resource_uri,
                     wql=wql,
                     enumeration_context=enumeration_context)
-                LOG.info("{0} {1} HTTP status: {2}".format(
+                LOG.debug("{0} {1} HTTP status: {2}".format(
                     self._hostname, wql, response.code))
                 enumeration_context, new_items = \
                     yield self._handler.handle_response(response)
@@ -577,7 +578,7 @@ class EnumerateClient(WinRMClient):
                 for reason in e.reasons:
                     LOG.error('{0} {1}'.format(self._hostname, reason.value))
             else:
-                LOG.info('{0} {1}'.format(self._hostname, e))
+                LOG.debug('{0} {1}'.format(self._hostname, e))
             raise
         returnValue(items)
 
