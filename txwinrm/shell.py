@@ -322,7 +322,11 @@ class LongRunningCommand(object):
 
     @defer.inlineCallbacks
     def start(self, command_line, ps_script=None):
-        elem = yield self._sender.send_request('create')
+        try:
+            elem = yield self._sender.send_request('create')
+        except Exception:
+            yield self._sender.close_connections()
+            raise
         self._shell_id = _find_shell_id(elem)
         if ps_script is not None:
             log.debug("LongRunningCommand run_command: {0}".format(command_line + ps_script))
@@ -338,7 +342,7 @@ class LongRunningCommand(object):
                 'command', shell_id=self._shell_id,
                 command_line_elem=command_line_elem,
                 timeout=self._sender._sender._conn_info.timeout)
-        except TimeoutError:
+        except Exception:
             yield self._sender.close_connections()
             raise
         self._command_id = _find_command_id(command_elem)
@@ -346,6 +350,9 @@ class LongRunningCommand(object):
 
     @defer.inlineCallbacks
     def receive(self):
+        if self._shell_id is None or self._command_id is None:
+            raise Exception('{} Attempted to receive data with no shell and/or'
+                            ' command id.'.format(self._sender._sender._conn_info.hostname))
         try:
             receive_elem = yield self._sender.send_request(
                 'receive',

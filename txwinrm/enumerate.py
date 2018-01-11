@@ -362,14 +362,10 @@ class DispatchingContentHandler(sax.handler.ContentHandler):
 
         This implementation dispatches to the sub-handler based on the tag.
         """
-        log.debug('DispatchingContentHandler startElementNS {0} {1} {2}'
-                  .format(name, self._subhandler, self._subhandler_tag))
         if self._subhandler is None:
             self._subhandler, tag = self._get_subhandler_for(name)
             if self._subhandler is not None:
                 self._subhandler_tag = tag
-                log.debug('new subhandler {0} {1}'
-                          .format(self._subhandler, self._subhandler_tag))
 
         if self._subhandler is not None:
             self._subhandler.startElementNS(name, qname, attrs)
@@ -381,8 +377,6 @@ class DispatchingContentHandler(sax.handler.ContentHandler):
 
         This implementation dispatches to the sub-handler based on the tag.
         """
-        log.debug('DispatchingContentHandler endElementNS {0} {1}'
-                  .format(name, self._subhandler))
         if self._subhandler is not None:
             self._subhandler.endElementNS(name, qname)
         if self._subhandler_tag is not None:
@@ -390,7 +384,6 @@ class DispatchingContentHandler(sax.handler.ContentHandler):
             if self._subhandler_tag.matches(uri, localname):
                 self._subhandler_tag = None
                 self._subhandler = None
-                log.debug('removed subhandler')
 
     def _get_subhandler_for(self, name):
         tag = create_tag_comparer(name)
@@ -442,8 +435,6 @@ class EnvelopeHandlerFactory(object):
         elif tag.matches(c.XML_NS_WS_MAN, c.WSENUM_ITEMS) \
                 or tag.matches(c.XML_NS_ENUMERATION, c.WSENUM_ITEMS):
             handler = self._items_handler
-        log.debug('EnvelopeHandlerFactory get_handler_for {0} {1}'
-                  .format(tag, handler))
         return handler
 
 
@@ -599,9 +590,6 @@ class ItemsContentHandler(sax.handler.ContentHandler):
         This instance manipulates the tag stack, creating a new instance if
         it's length is 1. Saves value as None if the nil attribute is present.
         """
-        log.debug('ItemsContentHandler startElementNS {0} v="{1}" t="{2}" {3}'
-                  .format(name, self._value, self._text_buffer.text,
-                          self._tag_stack))
         tag = create_tag_comparer(name)
         if len(self._tag_stack) > 3:
             raise Exception("tag stack too long: {0} {1}"
@@ -624,17 +612,12 @@ class ItemsContentHandler(sax.handler.ContentHandler):
         the text as a date and saves it for later use when the properties
         element is closed.
         """
-        log.debug('ItemsContentHandler endElementNS {0} v="{1}" t="{2}" {3}'
-                  .format(name, self._value, self._text_buffer.text,
-                          self._tag_stack))
         tag = create_tag_comparer(name)
         popped_tag = self._tag_stack.pop()
         if not popped_tag.matches(tag.uri, tag.localname):
             raise TagStackStateError(
                 "End of {0} when expecting {1}"
                 .format(tag.localname, popped_tag.localname))
-        log.debug("ItemsContentHandler endElementNS tag_stack: {0}"
-                  .format(self._tag_stack))
         if len(self._tag_stack) == 2:
             if self._value is None:
                 value = self._text_buffer.text
