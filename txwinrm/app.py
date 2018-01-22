@@ -222,6 +222,7 @@ def _parse_args(utility):
     parser.add_argument("--service", "-e", help='http/https/wsman', default='http')
     parser.add_argument("--includedir", help="valid includedir")
     parser.add_argument("--disable_rdns", action="store_true", help="disable kerberos reverse lookups")
+    parser.add_argument("--connect_timeout", help='timeout connecting after x seconds', default=60)
     utility.add_args(parser)
     args = parser.parse_args()
     if not args.config:
@@ -238,12 +239,13 @@ def _parse_args(utility):
                 password = getpass()
             connectiontype = 'Keep-Alive'
             disable_rdns = True if args.disable_rdns else False
+            connect_timeout = getattr(args, 'connect_timeout', 60)
             args.conn_info = ConnectionInfo(
                 hostname, args.authentication,
                 args.username, password, scheme,
                 port, connectiontype, args.keytab,
                 args.dcip, ipaddress=args.ipaddress, service=args.service,
-                include_dir=args.includedir, disable_rdns=disable_rdns)
+                include_dir=args.includedir, disable_rdns=disable_rdns, connect_timeout=connect_timeout)
             try:
                 verify_conn_info(args.conn_info)
             except Exception as e:

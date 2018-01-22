@@ -63,7 +63,7 @@ from .enumerate import (
     ItemsAccumulator
 )
 from .SessionManager import SESSION_MANAGER, Session
-from .twisted_utils import with_timeout
+from .twisted_utils import add_timeout, with_timeout
 kerberos = None
 LOG = logging.getLogger('winrm')
 
@@ -91,7 +91,7 @@ class WinRMSession(Session):
         super(WinRMSession, self).__init__()
 
         # twisted agent to send http/https requests
-        self._agent = _get_agent()
+        self._agent = None
 
         # our kerberos context for encryption/decryption
         self._gssclient = None
@@ -146,6 +146,8 @@ class WinRMSession(Session):
 
     @inlineCallbacks
     def _deferred_login(self, client=None):
+        if self._agent is None:
+            self._agent = _get_agent()
         if client:
             self.update_conn_info(client)
         self._url = "{c.scheme}://{c.ipaddress}:{c.port}/wsman".format(c=self._conn_info)
@@ -178,6 +180,8 @@ class WinRMSession(Session):
             self._gssclient = None
         self._token = None
         yield self.close_cached_connections()
+        self._agent._pool = None
+        self._agent = None
         returnValue(None)
 
     @inlineCallbacks
@@ -316,7 +320,13 @@ class WinRMClient(object):
     @inlineCallbacks
     def init_connection(self):
         """Initialize a connection through the session_manager"""
-        yield SESSION_MANAGER.init_connection(self, WinRMSession)
+        try:
+            yield add_timeout(SESSION_MANAGER.init_connection(self, WinRMSession),
+                              seconds=self._conn_info.connect_timeout,
+                              exception_class=TimeoutError)
+        except Exception:
+            self.close_connection(immediately=True)
+            raise
         returnValue(None)
 
     def is_kerberos(self):
@@ -384,8 +394,8 @@ class WinRMClient(object):
             'receive', shell_id=shell_id, command_id=command_id)
         returnValue(receive_elem)
 
-    def close_connection(self):
-        SESSION_MANAGER.close_connection(self)
+    def close_connection(self, immediately=False):
+        SESSION_MANAGER.close_connection(self, immediately)
 
     @inlineCallbacks
     def close_cached_connections(self):
@@ -412,12 +422,12 @@ class SingleCommandClient(WinRMClient):
         self.ps_script = ps_script
         yield self.init_connection()
         try:
-            cmd_response = yield self.session().semrun(
-                self.run_single_command,
-                command_line)
-        except Exception:
+            cmd_response = yield add_timeout(self.run_single_command(command_line), self._conn_info.timeout)
+        except Exception as e:
+            if isinstance(e, TimeoutError):
+                yield self.close_cached_connections()
             self.close_connection()
-            raise
+            raise e
         returnValue(cmd_response)
 
     @inlineCallbacks
@@ -579,7 +589,7 @@ class EnumerateClient(WinRMClient):
                     LOG.error('{0} {1}'.format(self._hostname, reason.value))
             else:
                 LOG.debug('{0} {1}'.format(self._hostname, e))
-            raise
+            raise e
         returnValue(items)
 
     @inlineCallbacks
@@ -595,12 +605,13 @@ class EnumerateClient(WinRMClient):
                     self.enumerate,
                     enum_info.wql,
                     enum_info.resource_uri)
-            except (UnauthorizedError, ForbiddenError):
-                # Fail the collection for general errors.
-                raise
             except RequestError:
                 # Store empty results for other query-specific errors.
                 continue
+            except Exception:
+                # Fail the collection for general errors.
+                self.close_connection()
+                raise
 
         self.close_connection()
         returnValue(items)
