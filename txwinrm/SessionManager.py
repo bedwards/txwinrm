@@ -29,6 +29,8 @@ from twisted.internet.defer import inlineCallbacks, returnValue
 from twisted.internet.protocol import Factory
 Factory.noisy = False
 
+DEFAULT_TIMEOUT = 60
+
 
 class Session(object):
 
@@ -202,7 +204,7 @@ class SessionManager(object):
         token = yield session.deferred_login(client)
         returnValue(token)
 
-    def close_connection(self, client):
+    def close_connection(self, client, immediately=False):
         """Kick off a session's logout.
 
         If there are no more clients using a session, remove it.
@@ -220,7 +222,10 @@ class SessionManager(object):
         except Exception:
             pass
         session._clients.discard(client)
-        session._logout_dc = reactor.callLater(65, self.deferred_logout, key)
+        timeout = DEFAULT_TIMEOUT + 5
+        if immediately:
+            timeout = 0
+        session._logout_dc = reactor.callLater(timeout, self.deferred_logout, key)
 
     @inlineCallbacks
     def deferred_logout(self, key):

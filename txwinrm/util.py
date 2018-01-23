@@ -445,15 +445,20 @@ class ConnectionInfo(namedtuple(
         'code_page',
         'locale',
         'include_dir',
-        'disable_rdns'])):
+        'disable_rdns',
+        'connect_timeout'])):
     def __new__(cls, hostname, auth_type, username, password, scheme, port,
-                connectiontype, keytab, dcip, timeout=60, trusted_realm='',
+                connectiontype, keytab, dcip, timeout=60, trusted_realm='', connect_timeout=60,
                 trusted_kdc='', ipaddress='', service='', envelope_size=512000,
                 code_page=65001, locale='en-US', include_dir=None, disable_rdns=False):
         if not ipaddress:
             ipaddress = hostname
         if not service:
             service = scheme
+        try:
+            connect_timeout = int(connect_timeout)
+        except Exception:
+            raise
         return super(ConnectionInfo, cls).__new__(cls, hostname, auth_type,
                                                   username, password, scheme,
                                                   port, connectiontype, keytab,
@@ -461,7 +466,7 @@ class ConnectionInfo(namedtuple(
                                                   trusted_realm, trusted_kdc,
                                                   ipaddress, service,
                                                   envelope_size, code_page, locale,
-                                                  include_dir, disable_rdns)
+                                                  include_dir, disable_rdns, int(connect_timeout))
 
 
 def verify_include_dir(conn_info):
@@ -574,12 +579,14 @@ class RequestSender(object):
         self._url = None
         self._headers = None
         self.gssclient = None
-        self.agent = _get_agent()
+        self.agent = None
         self.authorized = False
 
     @defer.inlineCallbacks
     def _get_url_and_headers(self):
         url = "{c.scheme}://{c.ipaddress}:{c.port}/wsman".format(c=self._conn_info)
+        if self.agent is None:
+            self.agent = _get_agent()
         if self._conn_info.auth_type == 'basic':
             headers = Headers(_CONTENT_TYPE)
             headers.addRawHeader('Connection', self._conn_info.connectiontype)
@@ -706,9 +713,11 @@ class RequestSender(object):
         elif self.agent:
             # twisted 12 returns a Deferred from the pool
             yield self.agent._pool.closeCachedConnections()
+            self.agent._pool = None
         if self.gssclient is not None:
             self.gssclient.cleanup()
             self.gssclient = None
+        self.agent = None
         defer.returnValue(None)
 
 
