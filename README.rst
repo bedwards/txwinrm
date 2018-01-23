@@ -86,13 +86,6 @@ Current Feature Support
 -  WMI Associators queries
 
 
-Future Feature Support
-----------------------
-
--  NTLM authentication (local accounts)
--  Kerberos keytab support
-
-
 Configuring the Target Windows Machines
 ---------------------------------------
 
