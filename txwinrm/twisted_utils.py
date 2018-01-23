@@ -27,6 +27,7 @@ def add_timeout(deferred, seconds, exception_class=error.TimeoutError):
         deferred.cancel()
 
         if not deferred_with_timeout.called:
+            print 'deferred_with_timeout.called'
             deferred_with_timeout.errback(exception_class())
 
     delayed_timeout = reactor.callLater(seconds, fire_timeout)
