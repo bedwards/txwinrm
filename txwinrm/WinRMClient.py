@@ -148,11 +148,13 @@ class WinRMSession(Session):
     def _deferred_login(self, client=None):
         if self._agent is None:
             self._agent = _get_agent()
+        if self._gssclient:
+            returnValue(self._gssclient)
         if client:
             self.update_conn_info(client)
         self._url = "{c.scheme}://{c.ipaddress}:{c.port}/wsman".format(c=self._conn_info)
         if self.is_kerberos():
-            self._gssclient = yield _authenticate_with_kerberos(self._conn_info, self._url, self._agent)
+            self._token = self._gssclient = yield _authenticate_with_kerberos(self._conn_info, self._url, self._agent)
             returnValue(self._gssclient)
         else:
             returnValue('basic_auth_token')
@@ -175,6 +177,9 @@ class WinRMSession(Session):
         # gssclient will no longer be valid so get rid of it
         # set token to None so the next client will reinitialize
         #   the connection
+        if self._clients:
+            # one last check so that we don't kill an active client
+            returnValue(None)
         if self._gssclient is not None:
             self._gssclient.cleanup()
             self._gssclient = None
@@ -242,6 +247,8 @@ class WinRMSession(Session):
 
     @inlineCallbacks
     def send_request(self, request_template_name, client, envelope_size=None, **kwargs):
+        if self._token is None:
+            yield client.init_connection()
         response = yield self._send_request(
             request_template_name, client, envelope_size=envelope_size, **kwargs)
         proto = _StringProtocol()
@@ -275,7 +282,7 @@ class WinRMSession(Session):
         if self._login_d and not self._login_d.called:
             # check for a reconnection attempt so we do not send any requests
             # to a dead connection
-            yield self._login_d
+            self._token = yield self._login_d
         LOG.debug('{} sending request: {} {}'.format(
             client._conn_info.hostname, request_template_name, kwargs))
         request = _get_request_template(request_template_name).format(**kwargs)
@@ -422,7 +429,7 @@ class SingleCommandClient(WinRMClient):
         self.ps_script = ps_script
         yield self.init_connection()
         try:
-            cmd_response = yield add_timeout(self.run_single_command(command_line), self._conn_info.timeout)
+            cmd_response = yield self.session().semrun(self.run_single_command, command_line)
         except Exception as e:
             if isinstance(e, TimeoutError):
                 yield self.close_cached_connections()
