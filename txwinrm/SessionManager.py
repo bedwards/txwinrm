@@ -225,14 +225,16 @@ class SessionManager(object):
         timeout = DEFAULT_TIMEOUT + 5
         if immediately:
             timeout = 0
-        session._logout_dc = reactor.callLater(timeout, self.deferred_logout, key)
+        if not session._clients:
+            session._logout_dc = reactor.callLater(timeout, self.deferred_logout, key)
 
     @inlineCallbacks
     def deferred_logout(self, key):
         # first, get the session from the key
         session = self.get_connection(key)
-        # close current connection and do cleanup for session
-        yield session._deferred_logout()
+        if not session._clients:
+            # close current connection and do cleanup for session
+            yield session._deferred_logout()
         returnValue(None)
 
 
