@@ -24,6 +24,7 @@ from twisted.internet.ssl import ClientContextFactory
 from twisted.web.http_headers import Headers
 from twisted.internet.threads import deferToThread
 from . import constants as c
+from twisted_utils import with_timeout
 
 from .krb5 import kinit, ccname, add_trusted_realm, config
 
@@ -189,6 +190,9 @@ def _get_basic_auth_header(conn_info):
     return 'Basic {0}'.format(base64.encodestring(authstr).strip())
 
 
+GSS_STEP_SEMS = {}
+
+
 class AuthGSSClient(object):
     """
     The Generic Security Services (GSS) API allows Kerberos implementations to
@@ -240,14 +244,24 @@ class AuthGSSClient(object):
     def _step(self, challenge=''):
         """
         Processes a single GSSAPI client-side step using the supplied server
-        data.
+        data.  Run through a DeferredSemaphore dedicated to the host so that
+        only one SPN is obtained
 
         @param challenge: a string containing the base64-encoded server data
             (which may be empty for the first step).
         @return:          a result code
         """
         log.debug('{} GSSAPI step challenge="{}"'.format(self._conn_info.hostname, challenge))
-        return deferToThread(kerberos.authGSSClientStep, self._context, challenge)
+        try:
+            sem = GSS_STEP_SEMS[self._conn_info.hostname]
+        except KeyError:
+            sem = GSS_STEP_SEMS[self._conn_info.hostname] = defer.DeferredSemaphore(1)
+        return sem.run(
+            with_timeout,
+            fn=deferToThread,
+            args=(kerberos.authGSSClientStep, self._context, challenge),
+            kwargs={},
+            seconds=self._conn_info.timeout)
 
     @defer.inlineCallbacks
     def get_base64_client_data(self, challenge=''):
@@ -621,6 +635,8 @@ class RequestSender(object):
     def send_request(self, request_template_name, **kwargs):
         log.debug('sending request on {}: {} {}'.format(self._conn_info.hostname,
                   request_template_name, kwargs))
+        if self.agent is None:
+            self.agent = _get_agent()
         kwargs['envelope_size'] = getattr(self._conn_info, 'envelope_size', 512000)
         kwargs['locale'] = getattr(self._conn_info, 'locale', 'en-US')
         kwargs['code_page'] = getattr(self._conn_info, 'code_page', 65001)
