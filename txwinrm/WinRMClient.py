@@ -7,7 +7,6 @@
 #
 ##############################################################################
 
-import copy
 import logging
 from collections import namedtuple
 from httplib import BAD_REQUEST, UNAUTHORIZED, FORBIDDEN, OK
@@ -62,7 +61,7 @@ from .enumerate import (
     _MAX_REQUESTS_PER_ENUMERATION,
     ItemsAccumulator
 )
-from .SessionManager import SESSION_MANAGER, Session
+from .SessionManager import SESSION_MANAGER, Session, copy
 from .twisted_utils import add_timeout, with_timeout
 kerberos = None
 LOG = logging.getLogger('winrm')
@@ -142,7 +141,7 @@ class WinRMSession(Session):
         return self._headers
 
     def update_conn_info(self, client):
-        self._conn_info = client._conn_info
+        self._conn_info = copy.deepcopy(client._conn_info)
 
     @inlineCallbacks
     def _deferred_login(self, client=None):
@@ -177,9 +176,12 @@ class WinRMSession(Session):
         # gssclient will no longer be valid so get rid of it
         # set token to None so the next client will reinitialize
         #   the connection
-        if self._clients:
-            # one last check so that we don't kill an active client
-            returnValue(None)
+        yield self._reset_all()
+        self._conn_info = None
+
+    @inlineCallbacks
+    def _reset_all(self):
+        self._login_d = None
         if self._gssclient is not None:
             self._gssclient.cleanup()
             self._gssclient = None
@@ -194,13 +196,8 @@ class WinRMSession(Session):
         if response.code == UNAUTHORIZED or response.code == BAD_REQUEST:
             # check to see if we need to re-authorize due to lost connection or bad request error
             # only retry if using kerberos
-            self._token = None
-            yield self.close_cached_connections()
-            self._login_d = None
-            if self._gssclient is not None:
-                self._gssclient.cleanup()
-                self._gssclient = None
-                self._token = None
+            yield self._reset_all()
+            if client.is_kerberos():
                 yield SESSION_MANAGER.init_connection(client, WinRMSession)
                 try:
                     yield self._set_headers()
@@ -270,12 +267,11 @@ class WinRMSession(Session):
     @inlineCallbacks
     def _send_request(self, request_template_name, client, envelope_size=None,
                       locale=None, code_page=None, **kwargs):
-        if self._logout_dc is not None:
-            try:
-                self._logout_dc.cancel()
-                self._logout_dc = None
-            except Exception:
-                pass
+        try:
+            self._logout_dc.cancel()
+            self._logout_dc = None
+        except Exception:
+            pass
         kwargs['envelope_size'] = envelope_size or client._conn_info.envelope_size
         kwargs['locale'] = locale or client._conn_info.locale
         kwargs['code_page'] = code_page or client._conn_info.code_page
@@ -314,7 +310,7 @@ class WinRMClient(object):
     def __init__(self, conn_info):
         verify_conn_info(conn_info)
         self.key = None
-        self._conn_info = conn_info
+        self._conn_info = copy.deepcopy(conn_info)
         self.ps_script = None
         self._shell_id = None
         self._session = None
@@ -413,7 +409,6 @@ class SingleCommandClient(WinRMClient):
     """Client to send a single command to a winrm device"""
     def __init__(self, conn_info):
         super(SingleCommandClient, self).__init__(conn_info)
-        self.key = (self._conn_info.ipaddress, 'short')
 
     @inlineCallbacks
     def run_command(self, command_line, ps_script=None):
@@ -427,9 +422,14 @@ class SingleCommandClient(WinRMClient):
         """
         cmd_response = None
         self.ps_script = ps_script
+        if ps_script:
+            self.key = (self._conn_info.ipaddress, 'short', self.ps_script)
+        else:
+            self.key = (self._conn_info.ipaddress, 'short', command_line)
         yield self.init_connection()
         try:
-            cmd_response = yield self.session().semrun(self.run_single_command, command_line)
+            run_cmd_d = self.run_single_command(command_line)
+            cmd_response = yield add_timeout(run_cmd_d, self._conn_info.timeout)
         except Exception as e:
             if isinstance(e, TimeoutError):
                 yield self.close_cached_connections()
