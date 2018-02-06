@@ -12,6 +12,7 @@ import re
 import base64
 import logging
 import httplib
+import copy
 from datetime import datetime
 from collections import namedtuple
 from xml.etree import cElementTree as ET
@@ -24,6 +25,7 @@ from twisted.internet.ssl import ClientContextFactory
 from twisted.web.http_headers import Headers
 from twisted.internet.threads import deferToThread
 from . import constants as c
+from twisted_utils import with_timeout
 
 from .krb5 import kinit, ccname, add_trusted_realm, config
 
@@ -189,6 +191,9 @@ def _get_basic_auth_header(conn_info):
     return 'Basic {0}'.format(base64.encodestring(authstr).strip())
 
 
+GSS_STEP_SEMS = {}
+
+
 class AuthGSSClient(object):
     """
     The Generic Security Services (GSS) API allows Kerberos implementations to
@@ -212,7 +217,7 @@ class AuthGSSClient(object):
         if not kerberos:
             import kerberos
         self._service = service
-        self._conn_info = conn_info
+        self._conn_info = copy.deepcopy(conn_info)
         self._username = conn_info.username
         self._password = conn_info.password
         self._realm = conn_info.username.split('@')[1].upper()
@@ -240,14 +245,24 @@ class AuthGSSClient(object):
     def _step(self, challenge=''):
         """
         Processes a single GSSAPI client-side step using the supplied server
-        data.
+        data.  Run through a DeferredSemaphore dedicated to the host so that
+        only one SPN is obtained
 
         @param challenge: a string containing the base64-encoded server data
             (which may be empty for the first step).
         @return:          a result code
         """
         log.debug('{} GSSAPI step challenge="{}"'.format(self._conn_info.hostname, challenge))
-        return deferToThread(kerberos.authGSSClientStep, self._context, challenge)
+        try:
+            sem = GSS_STEP_SEMS[self._conn_info.hostname]
+        except KeyError:
+            sem = GSS_STEP_SEMS[self._conn_info.hostname] = defer.DeferredSemaphore(1)
+        return sem.run(
+            with_timeout,
+            fn=deferToThread,
+            args=(kerberos.authGSSClientStep, self._context, challenge),
+            kwargs={},
+            seconds=self._conn_info.timeout)
 
     @defer.inlineCallbacks
     def get_base64_client_data(self, challenge=''):
@@ -448,9 +463,9 @@ class ConnectionInfo(namedtuple(
         'disable_rdns',
         'connect_timeout'])):
     def __new__(cls, hostname, auth_type, username, password, scheme, port,
-                connectiontype, keytab, dcip, timeout=60, trusted_realm='', connect_timeout=60,
+                connectiontype, keytab, dcip, timeout=60, trusted_realm='',
                 trusted_kdc='', ipaddress='', service='', envelope_size=512000,
-                code_page=65001, locale='en-US', include_dir=None, disable_rdns=False):
+                code_page=65001, locale='en-US', include_dir=None, disable_rdns=False, connect_timeout=60):
         if not ipaddress:
             ipaddress = hostname
         if not service:
@@ -621,6 +636,8 @@ class RequestSender(object):
     def send_request(self, request_template_name, **kwargs):
         log.debug('sending request on {}: {} {}'.format(self._conn_info.hostname,
                   request_template_name, kwargs))
+        if self.agent is None:
+            self.agent = _get_agent()
         kwargs['envelope_size'] = getattr(self._conn_info, 'envelope_size', 512000)
         kwargs['locale'] = getattr(self._conn_info, 'locale', 'en-US')
         kwargs['code_page'] = getattr(self._conn_info, 'code_page', 65001)
@@ -720,6 +737,9 @@ class RequestSender(object):
         self.agent = None
         defer.returnValue(None)
 
+    def update_conn_info(self, conn_info):
+        self._conn_info = copy.deepcopy(conn_info)
+
 
 class _StringProtocol(Protocol):
 
@@ -739,6 +759,9 @@ class EtreeRequestSender(object):
 
     def __init__(self, sender):
         self._sender = sender
+
+    def update_conn_info(self, conn_info):
+        self._sender.update_conn_info(conn_info)
 
     @defer.inlineCallbacks
     def send_request(self, request_template_name, **kwargs):

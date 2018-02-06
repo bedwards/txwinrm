@@ -305,6 +305,9 @@ class LongRunningCommand(object):
         # that our user created the shell
         self._min_runtime = min_runtime
 
+    def update_conn_info(self, conn_info):
+        self._sender.update_conn_info(conn_info)
+
     @defer.inlineCallbacks
     def is_shell_active(self, shell_id):
         if shell_id is None:
