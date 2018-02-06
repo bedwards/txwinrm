@@ -7,7 +7,6 @@
 #
 ##############################################################################
 
-import copy
 import logging
 from collections import namedtuple
 from httplib import BAD_REQUEST, UNAUTHORIZED, FORBIDDEN, OK
@@ -62,7 +61,7 @@ from .enumerate import (
     _MAX_REQUESTS_PER_ENUMERATION,
     ItemsAccumulator
 )
-from .SessionManager import SESSION_MANAGER, Session
+from .SessionManager import SESSION_MANAGER, Session, copy
 from .twisted_utils import add_timeout, with_timeout
 kerberos = None
 LOG = logging.getLogger('winrm')
@@ -142,7 +141,7 @@ class WinRMSession(Session):
         return self._headers
 
     def update_conn_info(self, client):
-        self._conn_info = client._conn_info
+        self._conn_info = copy.deepcopy(client._conn_info)
 
     @inlineCallbacks
     def _deferred_login(self, client=None):
@@ -178,6 +177,7 @@ class WinRMSession(Session):
         # set token to None so the next client will reinitialize
         #   the connection
         yield self._reset_all()
+        self._conn_info = None
 
     @inlineCallbacks
     def _reset_all(self):
@@ -310,7 +310,7 @@ class WinRMClient(object):
     def __init__(self, conn_info):
         verify_conn_info(conn_info)
         self.key = None
-        self._conn_info = conn_info
+        self._conn_info = copy.deepcopy(conn_info)
         self.ps_script = None
         self._shell_id = None
         self._session = None
@@ -336,7 +336,6 @@ class WinRMClient(object):
         return self._conn_info.auth_type == 'kerberos'
 
     def decrypt_body(self, body):
-        session = self.session()
         return self.session().decrypt_body(body)
 
     @inlineCallbacks
