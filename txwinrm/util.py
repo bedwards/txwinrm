@@ -12,6 +12,7 @@ import re
 import base64
 import logging
 import httplib
+import copy
 from datetime import datetime
 from collections import namedtuple
 from xml.etree import cElementTree as ET
@@ -216,7 +217,7 @@ class AuthGSSClient(object):
         if not kerberos:
             import kerberos
         self._service = service
-        self._conn_info = conn_info
+        self._conn_info = copy.deepcopy(conn_info)
         self._username = conn_info.username
         self._password = conn_info.password
         self._realm = conn_info.username.split('@')[1].upper()
@@ -462,9 +463,9 @@ class ConnectionInfo(namedtuple(
         'disable_rdns',
         'connect_timeout'])):
     def __new__(cls, hostname, auth_type, username, password, scheme, port,
-                connectiontype, keytab, dcip, timeout=60, trusted_realm='', connect_timeout=60,
+                connectiontype, keytab, dcip, timeout=60, trusted_realm='',
                 trusted_kdc='', ipaddress='', service='', envelope_size=512000,
-                code_page=65001, locale='en-US', include_dir=None, disable_rdns=False):
+                code_page=65001, locale='en-US', include_dir=None, disable_rdns=False, connect_timeout=60):
         if not ipaddress:
             ipaddress = hostname
         if not service:
@@ -736,6 +737,9 @@ class RequestSender(object):
         self.agent = None
         defer.returnValue(None)
 
+    def update_conn_info(self, conn_info):
+        self._conn_info = copy.deepcopy(conn_info)
+
 
 class _StringProtocol(Protocol):
 
@@ -755,6 +759,9 @@ class EtreeRequestSender(object):
 
     def __init__(self, sender):
         self._sender = sender
+
+    def update_conn_info(self, conn_info):
+        self._sender.update_conn_info(conn_info)
 
     @defer.inlineCallbacks
     def send_request(self, request_template_name, **kwargs):
