@@ -177,9 +177,6 @@ class WinRMSession(Session):
         # gssclient will no longer be valid so get rid of it
         # set token to None so the next client will reinitialize
         #   the connection
-        if self._logout_dc is not None and self._logout_dc.cancelled:
-            # one last check so that we don't kill an active client
-            returnValue(None)
         yield self._reset_all()
 
     @inlineCallbacks
@@ -192,7 +189,6 @@ class WinRMSession(Session):
         yield self.close_cached_connections()
         self._agent._pool = None
         self._agent = None
-        self._logout_dc = None
         returnValue(None)
 
     @inlineCallbacks
@@ -273,6 +269,7 @@ class WinRMSession(Session):
                       locale=None, code_page=None, **kwargs):
         try:
             self._logout_dc.cancel()
+            self._logout_dc = None
         except Exception:
             pass
         kwargs['envelope_size'] = envelope_size or client._conn_info.envelope_size
@@ -432,7 +429,6 @@ class SingleCommandClient(WinRMClient):
             self.key = (self._conn_info.ipaddress, 'short', command_line)
         yield self.init_connection()
         try:
-            # cmd_response = yield self.session().semrun(self.run_single_command, command_line)
             run_cmd_d = self.run_single_command(command_line)
             cmd_response = yield add_timeout(run_cmd_d, self._conn_info.timeout)
         except Exception as e:

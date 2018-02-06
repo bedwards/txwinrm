@@ -24,6 +24,7 @@ from twisted.internet.ssl import ClientContextFactory
 from twisted.web.http_headers import Headers
 from twisted.internet.threads import deferToThread
 from . import constants as c
+from twisted_utils import with_timeout
 
 from .krb5 import kinit, ccname, add_trusted_realm, config
 
@@ -189,7 +190,7 @@ def _get_basic_auth_header(conn_info):
     return 'Basic {0}'.format(base64.encodestring(authstr).strip())
 
 
-gss_step_sems = {}
+GSS_STEP_SEMS = {}
 
 
 class AuthGSSClient(object):
@@ -251,12 +252,16 @@ class AuthGSSClient(object):
         @return:          a result code
         """
         log.debug('{} GSSAPI step challenge="{}"'.format(self._conn_info.hostname, challenge))
-        global gss_step_sems
         try:
-            sem = gss_step_sems[self._conn_info.hostname]
+            sem = GSS_STEP_SEMS[self._conn_info.hostname]
         except KeyError:
-            sem = gss_step_sems[self._conn_info.hostname] = defer.DeferredSemaphore(1)
-        return sem.run(deferToThread, kerberos.authGSSClientStep, self._context, challenge)
+            sem = GSS_STEP_SEMS[self._conn_info.hostname] = defer.DeferredSemaphore(1)
+        return sem.run(
+            with_timeout,
+            fn=deferToThread,
+            args=(kerberos.authGSSClientStep, self._context, challenge),
+            kwargs={},
+            seconds=self._conn_info.timeout)
 
     @defer.inlineCallbacks
     def get_base64_client_data(self, challenge=''):

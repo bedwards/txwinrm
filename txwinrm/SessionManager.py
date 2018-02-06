@@ -97,10 +97,6 @@ class Session(object):
         """Calls session._deferred_logout() only if all other clients
         using the same session have also called deferred_logout.
         """
-        # we still have clients running, don't logout
-        if self._logout_dc is not None and self._logout_dc.cancelled:
-            returnValue(None)
-
         if self._token:
             try:
                 # go ahead and clear the token
@@ -185,6 +181,7 @@ class SessionManager(object):
         if session is not None:
             try:
                 session._logout_dc.cancel()
+                session._logout_dc = None
             except Exception:
                 pass
             # add client to set
@@ -218,6 +215,7 @@ class SessionManager(object):
             return
         try:
             session._logout_dc.cancel()
+            session._logout_dc = None
         except Exception:
             pass
         session._clients.discard(client)
@@ -231,9 +229,7 @@ class SessionManager(object):
     def deferred_logout(self, key):
         # first, get the session from the key
         session = self.get_connection(key)
-        if session._logout_dc is None or not session._logout_dc.cancelled:
-            # close current connection and do cleanup for session
-            yield session._deferred_logout()
+        yield session._deferred_logout()
         returnValue(None)
 
 
