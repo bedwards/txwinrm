@@ -43,6 +43,7 @@ from .util import (
     _ErrorReader,
     _StringProtocol,
     ET,
+    update_conn_info
 )
 from .shell import (
     _build_command_line_elem,
@@ -141,7 +142,7 @@ class WinRMSession(Session):
         return self._headers
 
     def update_conn_info(self, client):
-        self._conn_info = copy.deepcopy(client._conn_info)
+        self._conn_info = update_conn_info(self._conn_info, client._conn_info)
 
     @inlineCallbacks
     def _deferred_login(self, client=None):
@@ -177,7 +178,6 @@ class WinRMSession(Session):
         # set token to None so the next client will reinitialize
         #   the connection
         yield self._reset_all()
-        self._conn_info = None
 
     @inlineCallbacks
     def _reset_all(self):
@@ -272,15 +272,15 @@ class WinRMSession(Session):
             self._logout_dc = None
         except Exception:
             pass
-        kwargs['envelope_size'] = envelope_size or client._conn_info.envelope_size
-        kwargs['locale'] = locale or client._conn_info.locale
-        kwargs['code_page'] = code_page or client._conn_info.code_page
         if self._login_d and not self._login_d.called:
             # check for a reconnection attempt so we do not send any requests
             # to a dead connection
             self._token = yield self._login_d
+        kwargs['envelope_size'] = envelope_size or self._conn_info.envelope_size
+        kwargs['locale'] = locale or self._conn_info.locale
+        kwargs['code_page'] = code_page or self._conn_info.code_page
         LOG.debug('{} sending request: {} {}'.format(
-            client._conn_info.hostname, request_template_name, kwargs))
+            self._conn_info.hostname, request_template_name, kwargs))
         request = _get_request_template(request_template_name).format(**kwargs)
         self._headers = self._set_headers()
         if self.is_kerberos():
@@ -294,10 +294,10 @@ class WinRMSession(Session):
             response = yield self._agent.request(
                 'POST', self._url, self._headers, body_producer)
         except Exception as e:
-            LOG.debug('{} exception sending request: {}'.format(client._conn_info.hostname, e))
+            LOG.debug('{} exception sending request: {}'.format(self._conn_info.hostname, e))
             raise e
         LOG.debug('{} received response {} {}'.format(
-            client._conn_info.hostname, response.code, request_template_name))
+            self._conn_info.hostname, response.code, request_template_name))
         response = yield self.handle_response(request, response, client)
         returnValue(response)
 
@@ -310,7 +310,7 @@ class WinRMClient(object):
     def __init__(self, conn_info):
         verify_conn_info(conn_info)
         self.key = None
-        self._conn_info = copy.deepcopy(conn_info)
+        self._conn_info = update_conn_info(None, conn_info)
         self.ps_script = None
         self._shell_id = None
         self._session = None
@@ -345,7 +345,7 @@ class WinRMClient(object):
             yield self.init_connection()
 
         if not self.session():
-            raise Exception('Could not connect to device {}'.format(self.conn_info.hostname))
+            raise Exception('Could not connect to device {}'.format(self._conn_info.hostname))
         response = yield self.session().send_request(request, self, **kwargs)
         returnValue(response)
 
@@ -559,8 +559,8 @@ class EnumerateClient(WinRMClient):
     def __init__(self, conn_info):
         super(EnumerateClient, self).__init__(conn_info)
         self._handler = SaxResponseHandler(self)
-        self._hostname = conn_info.ipaddress
-        self.key = (conn_info.ipaddress, 'enumerate')
+        self._hostname = self._conn_info.ipaddress
+        self.key = (self._conn_info.ipaddress, 'enumerate')
 
     @inlineCallbacks
     def enumerate(self, wql, resource_uri=DEFAULT_RESOURCE_URI):
