@@ -1,3 +1,4 @@
+
 ##############################################################################
 #
 # Copyright (C) Zenoss, Inc. 2013, all rights reserved.
@@ -217,17 +218,17 @@ class AuthGSSClient(object):
         if not kerberos:
             import kerberos
         self._service = service
-        self._conn_info = copy.deepcopy(conn_info)
-        self._username = conn_info.username
-        self._password = conn_info.password
-        self._realm = conn_info.username.split('@')[1].upper()
-        self._dcip = conn_info.dcip
-        self._include_dir = conn_info.include_dir
+        self._conn_info = update_conn_info(None, conn_info)
+        self._username = self._conn_info.username
+        self._password = self._conn_info.password
+        self._realm = self._conn_info.username.split('@')[1].upper()
+        self._dcip = self._conn_info.dcip
+        self._include_dir = self._conn_info.include_dir
         gssflags = kerberos.GSS_C_CONF_FLAG | kerberos.GSS_C_MUTUAL_FLAG | kerberos.GSS_C_SEQUENCE_FLAG | kerberos.GSS_C_INTEG_FLAG
 
-        os.environ['KRB5CCNAME'] = ccname(conn_info.username)
-        if conn_info.trusted_realm and conn_info.trusted_kdc:
-            add_trusted_realm(conn_info.trusted_realm, conn_info.trusted_kdc)
+        os.environ['KRB5CCNAME'] = ccname(self._conn_info.username)
+        if self._conn_info.trusted_realm and self._conn_info.trusted_kdc:
+            add_trusted_realm(self._conn_info.trusted_realm, self._conn_info.trusted_kdc)
         if hasattr(kerberos, 'authGSSClientWrapIov'):
             result_code, self._context = kerberos.authGSSClientInit(service, gssflags=gssflags)
         else:
@@ -440,6 +441,51 @@ def _authenticate_with_kerberos(conn_info, url, agent, gss_client=None):
     defer.returnValue(gss_client)
 
 
+def update_conn_info(old_conn_info, new_conn_info):
+    if old_conn_info is None:
+        return(ConnectionInfo(hostname=new_conn_info.hostname,
+                              auth_type=new_conn_info.auth_type,
+                              username=new_conn_info.username,
+                              password=new_conn_info.password,
+                              scheme=new_conn_info.scheme,
+                              port=new_conn_info.port,
+                              connectiontype=new_conn_info.connectiontype,
+                              keytab=new_conn_info.keytab,
+                              dcip=new_conn_info.dcip,
+                              timeout=new_conn_info.timeout,
+                              trusted_realm=new_conn_info.trusted_realm,
+                              trusted_kdc=new_conn_info.trusted_kdc,
+                              ipaddress=new_conn_info.ipaddress,
+                              service=new_conn_info.service,
+                              envelope_size=new_conn_info.envelope_size,
+                              code_page=new_conn_info.code_page,
+                              locale=new_conn_info.locale,
+                              include_dir=new_conn_info.include_dir,
+                              disable_rdns=new_conn_info.disable_rdns,
+                              connect_timeout=new_conn_info.connect_timeout))
+    else:
+        return(old_conn_info._replace(hostname=new_conn_info.hostname,
+                                      auth_type=new_conn_info.auth_type,
+                                      username=new_conn_info.username,
+                                      password=new_conn_info.password,
+                                      scheme=new_conn_info.scheme,
+                                      port=new_conn_info.port,
+                                      connectiontype=new_conn_info.connectiontype,
+                                      keytab=new_conn_info.keytab,
+                                      dcip=new_conn_info.dcip,
+                                      timeout=new_conn_info.timeout,
+                                      trusted_realm=new_conn_info.trusted_realm,
+                                      trusted_kdc=new_conn_info.trusted_kdc,
+                                      ipaddress=new_conn_info.ipaddress,
+                                      service=new_conn_info.service,
+                                      envelope_size=new_conn_info.envelope_size,
+                                      code_page=new_conn_info.code_page,
+                                      locale=new_conn_info.locale,
+                                      include_dir=new_conn_info.include_dir,
+                                      disable_rdns=new_conn_info.disable_rdns,
+                                      connect_timeout=new_conn_info.connect_timeout))
+
+
 class ConnectionInfo(namedtuple(
     'ConnectionInfo', [
         'hostname',
@@ -590,7 +636,7 @@ class RequestSender(object):
 
     def __init__(self, conn_info):
         verify_conn_info(conn_info)
-        self._conn_info = conn_info
+        self._conn_info = update_conn_info(None, conn_info)
         self._url = None
         self._headers = None
         self.gssclient = None
@@ -738,7 +784,7 @@ class RequestSender(object):
         defer.returnValue(None)
 
     def update_conn_info(self, conn_info):
-        self._conn_info = copy.deepcopy(conn_info)
+        self._conn_info = update_conn_info(self._conn_info, conn_info)
 
 
 class _StringProtocol(Protocol):
