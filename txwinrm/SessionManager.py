@@ -219,7 +219,7 @@ class SessionManager(object):
         except Exception:
             pass
         session._clients.discard(client)
-        timeout = DEFAULT_TIMEOUT
+        timeout = DEFAULT_TIMEOUT + 5
         if immediately:
             timeout = 0
         if not session._clients:
