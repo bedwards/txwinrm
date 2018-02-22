@@ -181,11 +181,11 @@ class WinRMSession(Session):
 
     @inlineCallbacks
     def _reset_all(self):
+        self._token = None
         self._login_d = None
         if self._gssclient is not None:
             self._gssclient.cleanup()
             self._gssclient = None
-        self._token = None
         yield self.close_cached_connections()
         self._agent._pool = None
         self._agent = None
@@ -314,6 +314,12 @@ class WinRMClient(object):
         self.ps_script = None
         self._shell_id = None
         self._session = None
+
+    def is_connected(self):
+        if self.session() and self.session()._agent:
+            return True
+        else:
+            return False
 
     def session(self):
         if self._session is None:
@@ -565,7 +571,7 @@ class EnumerateClient(WinRMClient):
     @inlineCallbacks
     def enumerate(self, wql, resource_uri=DEFAULT_RESOURCE_URI):
         """Runs a remote WQL query."""
-        if self.session() is None:
+        if not self.is_connected():
             yield self.init_connection()
         request_template_name = 'enumerate'
         enumeration_context = None
@@ -612,9 +618,13 @@ class EnumerateClient(WinRMClient):
                     self.enumerate,
                     enum_info.wql,
                     enum_info.resource_uri)
-            except RequestError:
-                # Store empty results for other query-specific errors.
-                continue
+            except RequestError as e:
+                LOG.debug('{0} {1}'.format(self._hostname, e))
+                # only raise Unauthorized or Forbidden.  no need to continue
+                # Simple RequestError could just be missing wmi class
+                if isinstance(e, UnauthorizedError) or isinstance(e, ForbiddenError):
+                    self.close_connection()
+                    raise
             except Exception:
                 # Fail the collection for general errors.
                 self.close_connection()
