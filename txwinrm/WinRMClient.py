@@ -189,6 +189,8 @@ class WinRMSession(Session):
         yield self.close_cached_connections()
         self._agent._pool = None
         self._agent = None
+        self._headers = None
+        self._url = None
         returnValue(None)
 
     @inlineCallbacks
