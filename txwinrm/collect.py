@@ -1,6 +1,6 @@
 ##############################################################################
 #
-# Copyright (C) Zenoss, Inc. 2013, all rights reserved.
+# Copyright (C) Zenoss, Inc. 2013-2018, all rights reserved.
 #
 # This content is made available according to terms specified in the LICENSE
 # file at the top-level directory of this package.
@@ -11,13 +11,14 @@ import logging
 
 from collections import namedtuple
 from twisted.internet import defer
-from .enumerate import create_winrm_client, DEFAULT_RESOURCE_URI
+from .enumerate import DEFAULT_RESOURCE_URI
+from .WinRMClient import EnumerateClient
 from .util import (
     ConnectionInfo,
     ForbiddenError,
     RequestError,
     UnauthorizedError,
-    )
+)
 
 
 EnumInfo = namedtuple('EnumInfo', ['wql', 'resource_uri'])
@@ -41,7 +42,7 @@ class WinrmCollectClient(object):
             scheme: http (https coming soon)
             port: int
         """
-        client = create_winrm_client(conn_info)
+        client = EnumerateClient(conn_info)
         items = {}
         for enum_info in enum_infos:
             try:
