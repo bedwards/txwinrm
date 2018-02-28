@@ -1,7 +1,7 @@
 
 ##############################################################################
 #
-# Copyright (C) Zenoss, Inc. 2013, all rights reserved.
+# Copyright (C) Zenoss, Inc. 2013-2018, all rights reserved.
 #
 # This content is made available according to terms specified in the LICENSE
 # file at the top-level directory of this package.
@@ -13,7 +13,6 @@ import re
 import base64
 import logging
 import httplib
-import copy
 from datetime import datetime
 from collections import namedtuple
 from xml.etree import cElementTree as ET
@@ -687,7 +686,7 @@ class RequestSender(object):
         kwargs['envelope_size'] = getattr(self._conn_info, 'envelope_size', 512000)
         kwargs['locale'] = getattr(self._conn_info, 'locale', 'en-US')
         kwargs['code_page'] = getattr(self._conn_info, 'code_page', 65001)
-        if not self._url or self._conn_info.auth_type == 'kerberos':
+        if not self._url or self._conn_info.auth_type == 'kerberos' or not self.agent:
             yield self._set_url_and_headers()
         request = _get_request_template(request_template_name).format(**kwargs)
         if self.is_kerberos():
@@ -781,6 +780,7 @@ class RequestSender(object):
             self.gssclient.cleanup()
             self.gssclient = None
         self.agent = None
+        self._url = None
         defer.returnValue(None)
 
     def update_conn_info(self, conn_info):
