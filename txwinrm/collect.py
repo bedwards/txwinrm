@@ -11,7 +11,7 @@ import logging
 
 from collections import namedtuple
 from twisted.internet import defer
-from .enumerate import DEFAULT_RESOURCE_URI
+from .enumerate import create_winrm_client, DEFAULT_RESOURCE_URI
 from .WinRMClient import EnumerateClient
 from .util import (
     ConnectionInfo,
