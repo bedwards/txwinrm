@@ -686,7 +686,7 @@ class RequestSender(object):
         kwargs['envelope_size'] = getattr(self._conn_info, 'envelope_size', 512000)
         kwargs['locale'] = getattr(self._conn_info, 'locale', 'en-US')
         kwargs['code_page'] = getattr(self._conn_info, 'code_page', 65001)
-        if not self._url or self._conn_info.auth_type == 'kerberos' or not self.agent:
+        if not self._url or self._conn_info.auth_type == 'kerberos':
             yield self._set_url_and_headers()
         request = _get_request_template(request_template_name).format(**kwargs)
         if self.is_kerberos():
@@ -703,9 +703,9 @@ class RequestSender(object):
                       self._conn_info.hostname,
                       request))
             yield self.close_connections()
+            yield sender._set_url_and_headers()
             if sender.is_kerberos():
                 try:
-                    yield sender._set_url_and_headers()
                     encrypted_request = sender.gssclient.encrypt_body(request)
                     if not encrypted_request.startswith("--Encrypted Boundary"):
                         sender._headers.setRawHeaders('Content-Type', _CONTENT_TYPE['Content-Type'])
@@ -781,6 +781,7 @@ class RequestSender(object):
             self.gssclient = None
         self.agent = None
         self._url = None
+        self.authorized = False
         defer.returnValue(None)
 
     def update_conn_info(self, conn_info):
