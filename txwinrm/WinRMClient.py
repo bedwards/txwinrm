@@ -154,7 +154,14 @@ class WinRMSession(Session):
             self.update_conn_info(client)
         self._url = "{c.scheme}://{c.ipaddress}:{c.port}/wsman".format(c=self._conn_info)
         if self.is_kerberos():
-            self._token = self._gssclient = yield _authenticate_with_kerberos(self._conn_info, self._url, self._agent)
+            try:
+                self._token = self._gssclient = yield _authenticate_with_kerberos(self._conn_info, self._url, self._agent)
+            except Exception as e:
+                global kerberos
+                import kerberos
+                if isinstance(e, kerberos.GSSError) and 'The referenced context has expired' in e.args[0][0]:
+                    LOG.debug('found The referenced context has expired, starting over')
+                    self._token = self._gssclient = yield _authenticate_with_kerberos(self._conn_info, self._url, self._agent)
             returnValue(self._gssclient)
         else:
             returnValue('basic_auth_token')
