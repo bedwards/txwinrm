@@ -658,7 +658,12 @@ class RequestSender(object):
             headers = Headers(_ENCRYPTED_CONTENT_TYPE)
             headers.addRawHeader('Connection', self._conn_info.connectiontype)
             if self.gssclient is None:
-                self.gssclient = yield _authenticate_with_kerberos(self._conn_info, url, self.agent)
+                try:
+                    self.gssclient = yield _authenticate_with_kerberos(self._conn_info, url, self.agent)
+                except kerberos.GSSError as e:
+                    if 'The referenced context has expired' in e.args[0][0]:
+                        log.debug('found The referenced context has expired, starting over')
+                        self._token = self._gssclient = yield _authenticate_with_kerberos(self._conn_info, self._url, self._agent)
         else:
             raise Exception('unknown auth type: {0}'.format(self._conn_info.auth_type))
         defer.returnValue((url, headers))
