@@ -354,6 +354,8 @@ class LongRunningCommand(object):
     @defer.inlineCallbacks
     def receive(self):
         if self._shell_id is None or self._command_id is None:
+            # reset shell and command ids so we get a new one on the next start
+            self._shell_id = self._command_id = None
             raise Exception('{} Attempted to receive data with no shell and/or'
                             ' command id.'.format(self._sender._sender._conn_info.hostname))
         try:
@@ -403,7 +405,8 @@ class LongRunningCommand(object):
         except RequestError:
             yield self._sender.send_request('delete', shell_id=self._shell_id)
             yield self._sender.close_connections()
-            self._shell_id = None
+            # reset shell and command ids so we get a new one on the next start
+            self._shell_id = self._command_id = None
             defer.returnValue(CommandResponse([], [], 0))
         try:
             yield self._sender.send_request(
@@ -415,7 +418,8 @@ class LongRunningCommand(object):
             pass
         yield self._sender.send_request('delete', shell_id=self._shell_id)
         yield self._sender.close_connections()
-        self._shell_id = None
+        # reset shell and command ids so we get a new one on the next start
+        self._shell_id = self._command_id = None
         defer.returnValue(CommandResponse(stdout, stderr, self._exit_code))
 
 
