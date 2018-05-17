@@ -162,6 +162,8 @@ class WinRMSession(Session):
                 if isinstance(e, kerberos.GSSError) and 'The referenced context has expired' in e.args[0][0]:
                     LOG.debug('found The referenced context has expired, starting over')
                     self._token = self._gssclient = yield _authenticate_with_kerberos(self._conn_info, self._url, self._agent)
+                else:
+                    raise e
             returnValue(self._gssclient)
         else:
             returnValue('basic_auth_token')
