@@ -25,7 +25,7 @@ from twisted.internet.ssl import ClientContextFactory
 from twisted.web.http_headers import Headers
 from twisted.internet.threads import deferToThread
 from . import constants as c
-from twisted_utils import with_timeout
+from twisted_utils import add_timeout, with_timeout
 
 from .krb5 import kinit, ccname, add_trusted_realm, config
 
@@ -372,6 +372,12 @@ class AuthGSSClient(object):
         kerberos.authGSSClientClean(self._context)
         self._context = None
 
+    def context_lifetime(self):
+        try:
+            return kerberos.getGSSClientContextLifetime(self._context)
+        except Exception:
+            return 0
+
 
 def get_auth_details(auth_header=''):
     auth_details = ''
@@ -641,6 +647,7 @@ class RequestSender(object):
         self.gssclient = None
         self.agent = None
         self.authorized = False
+        self._lifetime_limit = 5
 
     @defer.inlineCallbacks
     def _get_url_and_headers(self):
@@ -655,6 +662,19 @@ class RequestSender(object):
                     'Authorization', _get_basic_auth_header(self._conn_info))
                 self.authorized = True
         elif self.is_kerberos():
+            if self.gssclient:
+                # check to see if our ticket is going to expire soon
+                # go ahead and kill the connection
+                # defer until it does expire and reinit
+                lifetime = self.gssclient.context_lifetime()
+                if lifetime <= self._lifetime_limit:
+                    d = defer.Deferred()
+                    yield self.close_connections()
+                    try:
+                        yield add_timeout(d, lifetime)
+                    except Exception:
+                        pass
+                    self.agent = _get_agent()
             headers = Headers(_ENCRYPTED_CONTENT_TYPE)
             headers.addRawHeader('Connection', self._conn_info.connectiontype)
             if self.gssclient is None:
@@ -663,7 +683,7 @@ class RequestSender(object):
                 except kerberos.GSSError as e:
                     if 'The referenced context has expired' in e.args[0][0]:
                         log.debug('found The referenced context has expired, starting over')
-                        self._token = self._gssclient = yield _authenticate_with_kerberos(self._conn_info, self._url, self._agent)
+                        self._token = self._gssclient = yield _authenticate_with_kerberos(self._conn_info, self._url, self.agent)
         else:
             raise Exception('unknown auth type: {0}'.format(self._conn_info.auth_type))
         defer.returnValue((url, headers))
@@ -686,6 +706,7 @@ class RequestSender(object):
     def send_request(self, request_template_name, **kwargs):
         log.debug('sending request on {}: {} {}'.format(self._conn_info.hostname,
                   request_template_name, kwargs))
+        self._lifetime_limit = kwargs.get('lifetime_limit', 5)
         if self.agent is None:
             self.agent = _get_agent()
         kwargs['envelope_size'] = getattr(self._conn_info, 'envelope_size', 512000)
