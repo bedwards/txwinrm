@@ -14,7 +14,8 @@ from httplib import BAD_REQUEST, UNAUTHORIZED, FORBIDDEN, OK
 from twisted.internet.defer import (
     inlineCallbacks,
     returnValue,
-    DeferredSemaphore
+    DeferredSemaphore,
+    Deferred
 )
 from twisted.internet.error import TimeoutError
 
@@ -113,6 +114,13 @@ class WinRMSession(Session):
         # unused.  reserved for possible future use
         self._refresh_dc = None
 
+        self.set_lifetime_limit(5)
+
+    def set_lifetime_limit(self, lifetime_limit):
+        # amount of time to compare against context lifetime
+        # if kerberos context lifetime is <=, then let it expire and reset
+        self._lifetime_limit = lifetime_limit
+
     def semrun(self, fn, *args, **kwargs):
         """Run fn(*args, **kwargs) under a DeferredSemaphore with a timeout."""
         return self.sem.run(
@@ -163,7 +171,7 @@ class WinRMSession(Session):
                     LOG.debug('found The referenced context has expired, starting over')
                     self._token = self._gssclient = yield _authenticate_with_kerberos(self._conn_info, self._url, self._agent)
                 else:
-                    raise e
+                    raise
             returnValue(self._gssclient)
         else:
             returnValue('basic_auth_token')
@@ -219,7 +227,7 @@ class WinRMSession(Session):
                     response = yield self._agent.request(
                         'POST', self._url, self._headers, body_producer)
                 except Exception as e:
-                    raise e
+                    raise
             if response.code == UNAUTHORIZED:
                 if self.is_kerberos():
                     global kerberos
@@ -255,8 +263,6 @@ class WinRMSession(Session):
 
     @inlineCallbacks
     def send_request(self, request_template_name, client, envelope_size=None, **kwargs):
-        if self._token is None:
-            yield client.init_connection()
         response = yield self._send_request(
             request_template_name, client, envelope_size=envelope_size, **kwargs)
         proto = _StringProtocol()
@@ -283,6 +289,24 @@ class WinRMSession(Session):
             self._logout_dc = None
         except Exception:
             pass
+        if client.is_kerberos():
+            # lazy import
+            global kerberos
+            if not kerberos:
+                import kerberos
+            # check to see if our ticket is going to expire soon
+            # go ahead and kill the connection
+            # defer until it does expire and reinit
+            lifetime = self._gssclient.context_lifetime()
+            if lifetime <= self._lifetime_limit:
+                d = Deferred()
+                yield self._reset_all()
+                try:
+                    yield add_timeout(d, lifetime)
+                except Exception:
+                    pass
+        if self._token is None:
+            yield client.init_connection()
         if self._login_d and not self._login_d.called:
             # check for a reconnection attempt so we do not send any requests
             # to a dead connection
@@ -306,7 +330,7 @@ class WinRMSession(Session):
                 'POST', self._url, self._headers, body_producer)
         except Exception as e:
             LOG.debug('{} exception sending request: {}'.format(self._conn_info.hostname, e))
-            raise e
+            raise
         LOG.debug('{} received response {} {}'.format(
             self._conn_info.hostname, response.code, request_template_name))
         response = yield self.handle_response(request, response, client)
@@ -318,13 +342,14 @@ class WinRMClient(object):
 
     Contains core functionality for various types of winrm based clients
     """
-    def __init__(self, conn_info):
+    def __init__(self, conn_info, lifetime_limit=5):
         verify_conn_info(conn_info)
         self.key = None
         self._conn_info = update_conn_info(None, conn_info)
         self.ps_script = None
         self._shell_id = None
         self._session = None
+        self._lifetime_limit = lifetime_limit
 
     def is_connected(self):
         if self.session() and self.session()._agent:
@@ -347,6 +372,7 @@ class WinRMClient(object):
         except Exception:
             self.close_connection(immediately=True)
             raise
+        self.session().set_lifetime_limit(self._lifetime_limit)
         returnValue(None)
 
     def is_kerberos(self):
@@ -451,7 +477,7 @@ class SingleCommandClient(WinRMClient):
             if isinstance(e, TimeoutError):
                 yield self.close_cached_connections()
             self.close_connection()
-            raise e
+            raise
         returnValue(cmd_response)
 
     @inlineCallbacks
@@ -613,7 +639,7 @@ class EnumerateClient(WinRMClient):
                     LOG.error('{0} {1}'.format(self._hostname, reason.value))
             else:
                 LOG.debug('{0} {1}'.format(self._hostname, e))
-            raise e
+            raise
         returnValue(items)
 
     @inlineCallbacks
