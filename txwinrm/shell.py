@@ -295,7 +295,7 @@ def _get_active_shell(request_sender, conn_info, min_runtime=600):
 
 class LongRunningCommand(object):
 
-    def __init__(self, sender, min_runtime=600):
+    def __init__(self, sender, min_runtime=600, lifetime_limit=5):
         self._sender = sender
         self._shell_id = None
         self._command_id = None
@@ -305,6 +305,13 @@ class LongRunningCommand(object):
         # that our user created the shell
         self._min_runtime = min_runtime
 
+        self.set_lifetime_limit(lifetime_limit)
+
+    def set_lifetime_limit(self, lifetime_limit):
+        # amount of time to compare against context lifetime
+        # if kerberos context lifetime is <=, then let it expire and reset
+        self._lifetime_limit = lifetime_limit
+
     def update_conn_info(self, conn_info):
         self._sender.update_conn_info(conn_info)
 
@@ -312,11 +319,11 @@ class LongRunningCommand(object):
     def is_shell_active(self, shell_id):
         if shell_id is None:
             defer.returnValue(False)
-        elem = yield self._sender.send_request('enum_shells')
+        elem = yield self._sender.send_request('enum_shells', lifetime_limit=self._lifetime_limit)
         enum_context = _find_enum_context(elem)
         if enum_context is None:
             defer.returnValue(False)
-        elem = yield self._sender.send_request('pull_shells', uuid=enum_context)
+        elem = yield self._sender.send_request('pull_shells', uuid=enum_context, lifetime_limit=self._lifetime_limit)
         shell_ids = _find_shell_ids(elem)
         if shell_id in shell_ids:
             defer.returnValue(True)
@@ -326,7 +333,7 @@ class LongRunningCommand(object):
     @defer.inlineCallbacks
     def start(self, command_line, ps_script=None):
         try:
-            elem = yield self._sender.send_request('create')
+            elem = yield self._sender.send_request('create', lifetime_limit=self._lifetime_limit)
         except Exception:
             yield self._sender.close_connections()
             raise
@@ -344,7 +351,8 @@ class LongRunningCommand(object):
             command_elem = yield self._sender.send_request(
                 'command', shell_id=self._shell_id,
                 command_line_elem=command_line_elem,
-                timeout=self._sender._sender._conn_info.timeout)
+                timeout=self._sender._sender._conn_info.timeout,
+                lifetime_limit=self._lifetime_limit)
         except Exception:
             yield self._sender.close_connections()
             raise
@@ -362,7 +370,8 @@ class LongRunningCommand(object):
             receive_elem = yield self._sender.send_request(
                 'receive',
                 shell_id=self._shell_id,
-                command_id=self._command_id)
+                command_id=self._command_id,
+                lifetime_limit=self._lifetime_limit)
         except TimeoutError:
             # could be simple network problem, reconnect and try again
             yield self._sender.close_connections()
@@ -370,7 +379,8 @@ class LongRunningCommand(object):
                 receive_elem = yield self._sender.send_request(
                     'receive',
                     shell_id=self._shell_id,
-                    command_id=self._command_id)
+                    command_id=self._command_id,
+                    lifetime_limit=self._lifetime_limit)
             except TimeoutError:
                 yield self._sender.close_connections()
             except Exception:
@@ -390,7 +400,8 @@ class LongRunningCommand(object):
                     'signal',
                     shell_id=self._shell_id,
                     command_id=self._command_id,
-                    signal_code=c.SHELL_SIGNAL_CTRL_C)
+                    signal_code=c.SHELL_SIGNAL_CTRL_C,
+                    lifetime_limit=self._lifetime_limit)
                 break
             except TimeoutError:
                 # we may need to reset the connection and try again
@@ -403,7 +414,9 @@ class LongRunningCommand(object):
             # close_connections done in receive() for TimeoutError
             raise
         except RequestError:
-            yield self._sender.send_request('delete', shell_id=self._shell_id)
+            yield self._sender.send_request('delete',
+                                            shell_id=self._shell_id,
+                                            lifetime_limit=self._lifetime_limit)
             yield self._sender.close_connections()
             # reset shell and command ids so we get a new one on the next start
             self._shell_id = self._command_id = None
@@ -416,7 +429,9 @@ class LongRunningCommand(object):
                 signal_code=c.SHELL_SIGNAL_TERMINATE)
         except RequestError:
             pass
-        yield self._sender.send_request('delete', shell_id=self._shell_id)
+        yield self._sender.send_request('delete',
+                                        shell_id=self._shell_id,
+                                        lifetime_limit=self._lifetime_limit)
         yield self._sender.close_connections()
         # reset shell and command ids so we get a new one on the next start
         self._shell_id = self._command_id = None
