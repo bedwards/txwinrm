@@ -437,7 +437,8 @@ class WinRMClient(object):
     @inlineCallbacks
     def _send_receive(self, shell_id, command_id):
         receive_elem = yield self.send_request(
-            'receive', shell_id=shell_id, command_id=command_id)
+            'receive', shell_id=shell_id, command_id=command_id,
+            timeout=self._conn_info.timeout)
         returnValue(receive_elem)
 
     def close_connection(self, immediately=False):

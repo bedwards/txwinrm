@@ -187,7 +187,9 @@ class SingleShotCommand(object):
         stderr_parts = []
         for i in xrange(_MAX_REQUESTS_PER_COMMAND):
             receive_elem = yield self._sender.send_request(
-                'receive', shell_id=shell_id, command_id=command_id)
+                'receive', shell_id=shell_id, command_id=command_id,
+                lifetime_limit=5,
+                timeout=self._sender._sender._conn_info.timeout)
             stdout_parts.extend(
                 _find_stream(receive_elem, command_id, 'stdout'))
             stderr_parts.extend(
@@ -371,7 +373,8 @@ class LongRunningCommand(object):
                 'receive',
                 shell_id=self._shell_id,
                 command_id=self._command_id,
-                lifetime_limit=self._lifetime_limit)
+                lifetime_limit=self._lifetime_limit,
+                timeout=self._sender._sender._conn_info.timeout)
         except TimeoutError:
             # could be simple network problem, reconnect and try again
             yield self._sender.close_connections()
@@ -380,7 +383,8 @@ class LongRunningCommand(object):
                     'receive',
                     shell_id=self._shell_id,
                     command_id=self._command_id,
-                    lifetime_limit=self._lifetime_limit)
+                    lifetime_limit=self._lifetime_limit,
+                    timeout=self._sender._sender._conn_info.timeout)
             except TimeoutError:
                 yield self._sender.close_connections()
             except Exception:
@@ -475,7 +479,9 @@ def retrieve_long_running_shell(sender, shell_id, command_line):
         receive_elem = yield sender.send_request(
             'receive',
             shell_id=shell_id,
-            command_id=command_id)
+            command_id=command_id,
+            lifetime_limit=5,
+            timeout=sender._conn_info.timeout)
         stdout_parts.extend(
             _find_stream(receive_elem, command_id, 'stdout'))
         stderr_parts.extend(
@@ -626,7 +632,9 @@ class RemoteShell(object):
             receive_elem = yield task.deferLater(
                 reactor, self._READ_DELAY, self._sender.send_request,
                 'receive', shell_id=self._shell_id,
-                command_id=self._command_id)
+                command_id=self._command_id,
+                lifetime_limit=5,
+                timeout=self._sender._sender._conn_info.timeout)
             self._stdout_parts.extend(
                 _find_stream(receive_elem, self._command_id, 'stdout'))
             self._stderr_parts.extend(
