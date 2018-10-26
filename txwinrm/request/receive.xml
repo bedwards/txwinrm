@@ -13,7 +13,7 @@
         <w:SelectorSet xmlns:w="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd" xmlns="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd">
             <w:Selector Name="ShellId">{shell_id}</w:Selector>
         </w:SelectorSet>
-        <w:OperationTimeout>PT60.000S</w:OperationTimeout>
+        <w:OperationTimeout>PT{timeout}.000S</w:OperationTimeout>
     </s:Header>
     <s:Body>
         <rsp:Receive xmlns:rsp="http://schemas.microsoft.com/wbem/wsman/1/windows/shell" SequenceId="0">
