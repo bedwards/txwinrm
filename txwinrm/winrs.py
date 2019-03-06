@@ -13,7 +13,7 @@ from pprint import pprint
 from twisted.internet import reactor, defer, task, threads
 from . import app
 from .shell import create_remote_shell, create_long_running_command
-from .WinRMClient import SingleCommandClient
+from .WinRMClient import SingleCommandClient, LongCommandClient
 
 
 def print_output(stdout, stderr):
@@ -57,13 +57,28 @@ class WinrsCmd(cmd.Cmd):
 @defer.inlineCallbacks
 def long_running_main(args):
     try:
-        client = create_long_running_command(args.conn_info)
-        yield client.start(args.command)
+        client = LongCommandClient(args.conn_info)
+        shell_cmd = yield client.start(args.cmd)
         for i in xrange(5):
-            stdout, stderr = yield task.deferLater(
-                reactor, 1, client.receive)
-            print_output(stdout, stderr)
-        yield client.stop()
+            response = yield task.deferLater(
+                reactor, 1, client.receive, shell_cmd)
+            print_output(response.stdout, response.stderr)
+        yield client.stop(shell_cmd)
+    finally:
+        app.stop_reactor()
+
+
+@defer.inlineCallbacks
+def long_running_powershell(args):
+    try:
+        client = LongCommandClient(args.conn_info)
+        shell_cmd = yield client.start('powershell -NoLogo -NonInteractive'
+                                       ' -NoProfile -Command ', args.command)
+        for i in xrange(5):
+            response = yield task.deferLater(
+                reactor, 1, client.receive, shell_cmd)
+            print_output(response.stdout, response.stderr)
+        yield client.stop(shell_cmd)
     finally:
         app.stop_reactor()
 
@@ -136,17 +151,19 @@ class WinrsUtility(object):
             batch_main(args)
         elif args.kind == 'powershell':
             powershell_main(args)
+        elif args.kind == 'long_powershell':
+            long_running_powershell(args)
         else:
             interactive_main(args)
 
     def add_args(self, parser):
         parser.add_argument(
             "kind", nargs='?', default="interactive",
-            choices=["interactive", "single", "batch", "long", "multiple", "powershell"])
+            choices=["interactive", "single", "batch", "long", "multiple", "powershell", "long_powershell"])
         parser.add_argument("--command", "-x")
 
     def check_args(self, args):
-        if not args.command and args.kind in ["single", "batch", "long", "multiple", "powershell"]:
+        if not args.command and args.kind in ["single", "batch", "long", "multiple", "powershell", "long_powershell"]:
             print >>sys.stderr, \
                 "ERROR: {0} requires that you specify a command."
             return False
