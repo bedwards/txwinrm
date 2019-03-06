@@ -424,7 +424,8 @@ def _authenticate_with_kerberos(conn_info, url, agent, gss_client=None):
                 "Kerberos error code {0}: {1}.".format(e.args[1][1], e.args[1][0])
             raise Exception(msg)
         raise UnauthorizedError(
-            "HTTP Unauthorized received on initial kerberos request.  Check username and password")
+            "HTTP Unauthorized received on initial kerberos request.  "
+            "Check user's winrm permissions")
     elif response.code == httplib.FORBIDDEN:
         raise ForbiddenError(
             "Forbidden. Check WinRM port and version.")
