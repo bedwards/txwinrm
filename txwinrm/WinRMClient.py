@@ -69,6 +69,10 @@ kerberos = None
 LOG = logging.getLogger('winrm')
 
 
+class ShellException(Exception):
+    pass
+
+
 def create_shell_from_elem(elem):
     accumulator = ItemsAccumulator()
     accumulator.new_item()
@@ -204,8 +208,9 @@ class WinRMSession(Session):
             self._gssclient.cleanup()
             self._gssclient = None
         yield self.close_cached_connections()
-        self._agent._pool = None
-        self._agent = None
+        if self._agent:
+            self._agent._pool = None
+            self._agent = None
         self._headers = None
         self._url = None
         returnValue(None)
@@ -347,8 +352,6 @@ class WinRMClient(object):
         self.key = None
         self._conn_info = update_conn_info(None, conn_info)
         self.ps_script = None
-        self._shell_id = None
-        self._session = None
         self._lifetime_limit = lifetime_limit
 
     def is_connected(self):
@@ -358,9 +361,7 @@ class WinRMClient(object):
             return False
 
     def session(self):
-        if self._session is None:
-            self._session = SESSION_MANAGER.get_connection(self.key)
-        return self._session
+        return SESSION_MANAGER.get_connection(self.key)
 
     @inlineCallbacks
     def init_connection(self):
@@ -383,8 +384,9 @@ class WinRMClient(object):
 
     @inlineCallbacks
     def send_request(self, request, **kwargs):
-        if self.session() is None or self._session._token is None\
-                or (self._session.is_kerberos() and self._session._gssclient is None):
+        session = self.session()
+        if session is None or session._token is None\
+                or (session.is_kerberos() and session._gssclient is None):
             yield self.init_connection()
 
         if not self.session():
@@ -395,8 +397,7 @@ class WinRMClient(object):
     @inlineCallbacks
     def _create_shell(self):
         elem = yield self.send_request('create')
-        self._shell_id = _find_shell_id(elem)
-        returnValue(self._shell_id)
+        returnValue(_find_shell_id(elem))
 
     @inlineCallbacks
     def _delete_shell(self, shell_id):
@@ -492,10 +493,10 @@ class SingleCommandClient(WinRMClient):
                 .stderr = [<non-empty, stripped line>, ...]
                 .exit_code = <int>
         """
-        yield self._create_shell()
+        shell_id = yield self._create_shell()
         cmd_response = None
         try:
-            cmd_response = yield self._run_command(self._shell_id, command_line)
+            cmd_response = yield self._run_command(shell_id, command_line)
         except TimeoutError:
             yield self.close_cached_connections()
         self.close_connection()
@@ -521,80 +522,107 @@ class SingleCommandClient(WinRMClient):
         yield self._signal_terminate(shell_id, command_id)
         stdout = _stripped_lines(stdout_parts)
         stderr = _stripped_lines(stderr_parts)
-        yield self._delete_shell(self._shell_id)
+        yield self._delete_shell(shell_id)
         returnValue(CommandResponse(stdout, stderr, exit_code))
 
 
 class LongCommandClient(WinRMClient):
-    """UNDER CONSTRUCTION!!! DO NOT USE!!
-
-    Having issues with this client.  May Need to be reworked a bit
-
-    TODO: If raising exception, we need to delete the remote shell
-    before closing connection
-
-    Client to run a single long running command to a winrm device"""
+    """Client to run a long running command on a winrm device"""
     def __init__(self, conn_info):
         super(LongCommandClient, self).__init__(conn_info)
-        self._shell_id = None
-        self._command_id = None
-        self._exit_code = None
+        self._shells = []
 
     @inlineCallbacks
     def start(self, command_line, ps_script=''):
-        """Start long running command
+        """Start long running command.
 
         If running a powershell script, send it in separately with ps_script in
         "& {<actual script here>}" format
         e.g. command_line='powershell -NoLogo -NonInteractive -NoProfile -Command',
         ps_script='"& {get-counter -counter \\\"\memory\pages output/sec\\\" }"'
 
+        Return a shell id, command id tuple on success
+
         """
-        LOG.debug("{} LongRunningCommand run_command: {}".format(self._conn_info.hostname, command_line))
+        LOG.debug("{} LongRunningCommand run_command: {}".format(
+            self._conn_info.hostname, command_line))
         self.key = (self._conn_info.ipaddress, command_line + str(ps_script))
         self.ps_script = ps_script
-        yield self.init_connection()
-        self._shell_id = yield self._create_shell()
+        if not self.is_connected():
+            yield self.init_connection()
         try:
-            command_elem = yield self._send_command(self._shell_id,
+            shell_id = yield self._create_shell()
+        except TimeoutError:
+            self.close_cached_connections()
+            raise
+        try:
+            command_elem = yield self._send_command(shell_id,
                                                     command_line)
         except TimeoutError:
-            yield self._sender.send_request('delete', shell_id=self._shell_id)
-            self.close_connection()
+            yield self._delete_shell(shell_id)
+            self.close_cached_connections()
             raise
-        self._command_id = _find_command_id(command_elem)
-        returnValue(None)
+        command_id = _find_command_id(command_elem)
+        shell_cmd = (shell_id, command_id)
+        self._shells.append(shell_cmd)
+        returnValue(shell_cmd)
 
     @inlineCallbacks
-    def receive(self):
+    def receive(self, shell_cmd=None):
+        """Receive data from running command.
+
+        shell_cmd is shell and command id pair from which to receive output
+        if not supplied, assume the first pair in the _shells list.
+        """
+        if not shell_cmd:
+            try:
+                shell_cmd = self._shells[0]
+            except IndexError:
+                raise ShellException('No shell and command id from which to '
+                                     'receive output.')
         try:
-            receive_elem = yield self._send_receive(self._shell_id, self._command_id)
+            receive_elem = yield self._send_receive(*shell_cmd)
         except TimeoutError:
             self.close_connection()
             raise
-        stdout_parts = _find_stream(receive_elem, self._command_id, 'stdout')
-        stderr_parts = _find_stream(receive_elem, self._command_id, 'stderr')
-        self._exit_code = _find_exit_code(receive_elem, self._command_id)
+        stdout_parts = _find_stream(receive_elem, shell_cmd[1], 'stdout')
+        stderr_parts = _find_stream(receive_elem, shell_cmd[1], 'stderr')
+        exit_code = _find_exit_code(receive_elem, shell_cmd[1])
         stdout = _stripped_lines(stdout_parts)
         stderr = _stripped_lines(stderr_parts)
-        returnValue((stdout, stderr))
+        returnValue(CommandResponse(stdout, stderr, exit_code))
 
     @inlineCallbacks
-    def stop(self, close=False):
-        yield self._signal_ctrl_c(self._shell_id, self._command_id)
+    def stop(self, shell_cmd=None):
+        """Stop running command.
+
+        shell_cmd is shell and command id pair to stop
+        if not supplied, assume the first pair in the _shells list.
+        """
+        if not shell_cmd:
+            try:
+                shell_cmd = self._shells[0]
+            except IndexError:
+                # nothing to stop or delete, return empty
+                self.close_connection()
+                returnValue(CommandResponse([], [], 0))
+        yield self._signal_ctrl_c(*shell_cmd)
         try:
-            stdout, stderr = yield self.receive()
+            response = yield self.receive()
         except TimeoutError:
+            response = CommandResponse([], [], 0)
+        yield self._signal_terminate(*shell_cmd)
+        yield self._delete_shell(shell_cmd[0])
+        self.close_connection()
+        try:
+            self._shells.remove(shell_cmd)
+        except ValueError:
             pass
-        yield self._signal_terminate(self._shell_id, self._command_id)
-        yield self._delete_shell(self._shell_id)
-        if close:
-            self.close_connection()
-        returnValue(CommandResponse(stdout, stderr, self._exit_code))
+        returnValue(response)
 
 
 class EnumerateClient(WinRMClient):
-    """Client to send a single wmi query(WQL) to a winrm device
+    """Client to send a single wmi query(WQL) to a winrm device.
 
     Sends enumerate requests to a host running the WinRM service and returns
     a list of items.
