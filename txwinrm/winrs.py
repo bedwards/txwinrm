@@ -1,6 +1,6 @@
 ##############################################################################
 #
-# Copyright (C) Zenoss, Inc. 2013, all rights reserved.
+# Copyright (C) Zenoss, Inc. 2013-2019, all rights reserved.
 #
 # This content is made available according to terms specified in the LICENSE
 # file at the top-level directory of this package.
@@ -60,9 +60,10 @@ def long_running_main(args):
         client = LongCommandClient(args.conn_info)
         shell_cmd = yield client.start(args.cmd)
         for i in xrange(5):
-            response = yield task.deferLater(
-                reactor, 1, client.receive, shell_cmd)
+            response = yield client.receive(shell_cmd)
             print_output(response.stdout, response.stderr)
+            if response.exit_code is not None:
+                break
         yield client.stop(shell_cmd)
     finally:
         app.stop_reactor()
@@ -75,9 +76,10 @@ def long_running_powershell(args):
         shell_cmd = yield client.start('powershell -NoLogo -NonInteractive'
                                        ' -NoProfile -Command ', args.command)
         for i in xrange(5):
-            response = yield task.deferLater(
-                reactor, 1, client.receive, shell_cmd)
+            response = yield client.receive(shell_cmd)
             print_output(response.stdout, response.stderr)
+            if response.exit_code is not None:
+                break
         yield client.stop(shell_cmd)
     finally:
         app.stop_reactor()
@@ -127,15 +129,14 @@ def single_shot_main(args):
 @defer.inlineCallbacks
 def powershell_main(args):
     try:
-        client = create_long_running_command(args.conn_info)
-        yield client.start('powershell -NoLogo -NonInteractive -NoProfile -Command ', args.command)
+        client = LongCommandClient(args.conn_info)
+        shell_cmd = yield client.start('powershell -NoLogo -NonInteractive -NoProfile -Command ', args.command)
         while True:
-            stdout, stderr = yield task.deferLater(
-                reactor, 1, client.receive)
-            print_output(stdout, stderr)
-            if client._exit_code is not None:
+            response = yield client.receive(shell_cmd)
+            print_output(response.stdout, response.stderr)
+            if response.exit_code is not None:
                 break
-        yield client.stop()
+        yield client.stop(shell_cmd)
     finally:
         app.stop_reactor()
 

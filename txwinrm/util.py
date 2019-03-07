@@ -1,7 +1,7 @@
 
 ##############################################################################
 #
-# Copyright (C) Zenoss, Inc. 2013-2018, all rights reserved.
+# Copyright (C) Zenoss, Inc. 2013-2019, all rights reserved.
 #
 # This content is made available according to terms specified in the LICENSE
 # file at the top-level directory of this package.
@@ -191,7 +191,7 @@ def _get_basic_auth_header(conn_info):
     return 'Basic {0}'.format(base64.encodestring(authstr).strip())
 
 
-GSS_STEP_SEMS = {}
+GSS_SEM = defer.DeferredSemaphore(1)
 
 
 class AuthGSSClient(object):
@@ -237,6 +237,8 @@ class AuthGSSClient(object):
 
     def __del__(self):
         if self._context is not None:
+            if not kerberos:
+                return
             result_code = kerberos.authGSSClientClean(self._context)
 
             if result_code != kerberos.AUTH_GSS_COMPLETE:
@@ -253,20 +255,24 @@ class AuthGSSClient(object):
         @return:          a result code
         """
         log.debug('{} GSSAPI step challenge="{}"'.format(self._conn_info.hostname, challenge))
-        try:
-            sem = GSS_STEP_SEMS[self._conn_info.hostname]
-        except KeyError:
-            sem = GSS_STEP_SEMS[self._conn_info.hostname] = defer.DeferredSemaphore(1)
-        return sem.run(
+
+        def gss_step_sem():
+            # Because this is in a single semaphore, no other request
+            # will overwrite the KRB5CCNAME env variable
+            os.environ['KRB5CCNAME'] = ccname(self._conn_info.username)
+            return kerberos.authGSSClientStep(self._context, challenge)
+
+        return GSS_SEM.run(
             with_timeout,
             fn=deferToThread,
-            args=(kerberos.authGSSClientStep, self._context, challenge),
+            args=(gss_step_sem,),
             kwargs={},
             seconds=self._conn_info.timeout)
 
     @defer.inlineCallbacks
     def get_base64_client_data(self, challenge=''):
-        """
+        """Get authorization token.
+
         @return: a string containing the base64-encoded client data to be sent
             to the server.
         """
