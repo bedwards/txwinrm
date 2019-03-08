@@ -195,7 +195,8 @@ GSS_SEM = defer.DeferredSemaphore(1)
 
 
 class AuthGSSClient(object):
-    """
+    """Client for working with the gss api.
+
     The Generic Security Services (GSS) API allows Kerberos implementations to
     be API compatible. Instances of this class operate on a context for GSSAPI
     client-side authentication with the given service principal.
@@ -207,7 +208,8 @@ class AuthGSSClient(object):
     """
 
     def __init__(self, service, conn_info):
-        """
+        """Initialize AuthGSSClient.
+
         @param service: a string containing the service principal in the form
             'type@fqdn' (e.g. 'imap@mail.apple.com').
         """
@@ -223,13 +225,17 @@ class AuthGSSClient(object):
         self._realm = self._conn_info.username.split('@')[1].upper()
         self._dcip = self._conn_info.dcip
         self._include_dir = self._conn_info.include_dir
-        gssflags = kerberos.GSS_C_CONF_FLAG | kerberos.GSS_C_MUTUAL_FLAG | kerberos.GSS_C_SEQUENCE_FLAG | kerberos.GSS_C_INTEG_FLAG
+        gssflags = kerberos.GSS_C_CONF_FLAG | kerberos.GSS_C_MUTUAL_FLAG |\
+            kerberos.GSS_C_SEQUENCE_FLAG | kerberos.GSS_C_INTEG_FLAG
 
         os.environ['KRB5CCNAME'] = ccname(self._conn_info.username)
         if self._conn_info.trusted_realm and self._conn_info.trusted_kdc:
-            add_trusted_realm(self._conn_info.trusted_realm, self._conn_info.trusted_kdc)
+            add_trusted_realm(self._conn_info.trusted_realm,
+                              self._conn_info.trusted_kdc)
         if hasattr(kerberos, 'authGSSClientWrapIov'):
-            result_code, self._context = kerberos.authGSSClientInit(service, gssflags=gssflags)
+            result_code, self._context = kerberos.authGSSClientInit(
+                service,
+                gssflags=gssflags)
         else:
             result_code, self._context = kerberos.authGSSClientInit(service)
         if result_code != kerberos.AUTH_GSS_COMPLETE:
@@ -254,7 +260,8 @@ class AuthGSSClient(object):
             (which may be empty for the first step).
         @return:          a result code
         """
-        log.debug('{} GSSAPI step challenge="{}"'.format(self._conn_info.hostname, challenge))
+        log.debug('{} GSSAPI step challenge="{}"'.format(
+            self._conn_info.hostname, challenge))
 
         def gss_step_sem():
             # Because this is in a single semaphore, no other request
@@ -286,25 +293,31 @@ class AuthGSSClient(object):
                 if msg == 'Cannot determine realm for numeric host address':
                     raise Exception(msg)
                 elif msg == 'Server not found in Kerberos database':
-                    raise Exception(msg + ': Attempted to get ticket for {}.  Ensure reverse DNS is correct.'.format(self._service))
-                log.debug('{} {}. Calling kinit.'.format(self._conn_info.hostname, msg))
-                kinit_result = yield kinit(self._username,
-                                           self._password,
-                                           self._dcip,
-                                           includedir=self._include_dir,
-                                           disable_rdns=self._conn_info.disable_rdns)
+                    raise Exception(
+                        msg + ': Attempted to get ticket for {}. Ensure'
+                        ' reverse DNS is correct.'.format(self._service))
+                log.debug('{} {}. Calling kinit.'.format(
+                    self._conn_info.hostname, msg))
+                kinit_result = yield kinit(
+                    self._username,
+                    self._password,
+                    self._dcip,
+                    includedir=self._include_dir,
+                    disable_rdns=self._conn_info.disable_rdns)
                 if kinit_result:
                     # this error is ok.  it just means more
                     # than one process is calling kinit
                     if _KRB_INTERNAL_CACHE_ERR not in kinit_result:
                         kinit_result = kinit_result.strip()
                         extra = ''
-                        if 'Realm not local to KDC while getting initial credentials' in kinit_result:
-                            extra = ' Make sure all KDCs are valid: {}'.format(','.join(config.realms[self._realm]))
+                        if 'Realm not local to KDC while getting initial '\
+                                'credentials' in kinit_result:
+                            extra = ' Make sure all KDCs are valid: {}'.format(
+                                ','.join(config.realms[self._realm]))
                         raise Exception(kinit_result + extra)
 
         if result_code != kerberos.AUTH_GSS_CONTINUE:
-            raise Exception('kerberos authGSSClientStep failed ({0}).'
+            raise Exception('failed to obtain service principal ticket ({0}).'
                             .format(result_code))
         base64_client_data = kerberos.authGSSClientResponse(self._context)
         defer.returnValue(base64_client_data)
@@ -409,7 +422,8 @@ def _authenticate_with_kerberos(conn_info, url, agent, gss_client=None):
     try:
         base64_client_data = yield gss_client.get_base64_client_data()
     except Exception as e:
-        log.debug('{} error in get_base64_client_data: {}'.format(conn_info.hostname, e))
+        log.debug('{} error in get_base64_client_data: {}'.format(
+            conn_info.hostname, e))
         raise e
     auth = 'Kerberos {0}'.format(base64_client_data)
     k_headers = Headers(_CONTENT_TYPE)
@@ -417,7 +431,8 @@ def _authenticate_with_kerberos(conn_info, url, agent, gss_client=None):
     k_headers.addRawHeader('Content-Length', '0')
     log.debug('%s sending auth data', conn_info.hostname)
     response = yield agent.request('POST', url, k_headers, None)
-    log.debug('%s received authorization response code %d', conn_info.hostname, response.code)
+    log.debug('%s received authorization response code %d', conn_info.hostname,
+              response.code)
     auth_header = response.headers.getRawHeaders('WWW-Authenticate')[0]
     auth_details = get_auth_details(auth_header)
 
@@ -426,12 +441,14 @@ def _authenticate_with_kerberos(conn_info, url, agent, gss_client=None):
             if auth_details:
                 yield gss_client._step(auth_details)
         except kerberos.GSSError as e:
-            msg = "HTTP Unauthorized received on kerberos initialization.  "\
-                "Kerberos error code {0}: {1}.".format(e.args[1][1], e.args[1][0])
+            msg = "Unauthorized: Received kerberos error during "\
+                "authentication of connection {0}: {1}.".format(
+                    e.args[1][1], e.args[1][0])
             raise Exception(msg)
         raise UnauthorizedError(
-            "HTTP Unauthorized received on initial kerberos request.  "
-            "Check user's winrm permissions")
+            "Unauthorized to use winrm on {}. Must be Administrator or "
+            "user given permissions to use winrm.".format(
+                conn_info.hostname))
     elif response.code == httplib.FORBIDDEN:
         raise ForbiddenError(
             "Forbidden. Check WinRM port and version.")
@@ -441,7 +458,7 @@ def _authenticate_with_kerberos(conn_info, url, agent, gss_client=None):
         xml_str = yield proto.d
         xml_str = gss_client.decrypt_body(xml_str)
         raise Exception(
-            "status code {0} received on initial kerberos request {1}"
+            "status code {0} received on initial winrm connection {1}"
             .format(response.code, xml_str))
     if not auth_details:
         raise Exception(
@@ -523,7 +540,8 @@ class ConnectionInfo(namedtuple(
     def __new__(cls, hostname, auth_type, username, password, scheme, port,
                 connectiontype, keytab, dcip, timeout=60, trusted_realm='',
                 trusted_kdc='', ipaddress='', service='', envelope_size=512000,
-                code_page=65001, locale='en-US', include_dir=None, disable_rdns=False, connect_timeout=60):
+                code_page=65001, locale='en-US', include_dir=None,
+                disable_rdns=False, connect_timeout=60):
         if not ipaddress:
             ipaddress = hostname
         if not service:
@@ -538,8 +556,10 @@ class ConnectionInfo(namedtuple(
                                                   dcip, timeout,
                                                   trusted_realm, trusted_kdc,
                                                   ipaddress, service,
-                                                  envelope_size, code_page, locale,
-                                                  include_dir, disable_rdns, int(connect_timeout))
+                                                  envelope_size, code_page,
+                                                  locale, include_dir,
+                                                  disable_rdns,
+                                                  int(connect_timeout))
 
 
 def verify_include_dir(conn_info):
