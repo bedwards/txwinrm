@@ -218,7 +218,8 @@ class WinRMSession(Session):
     @inlineCallbacks
     def handle_response(self, request, response, client):
         if response.code == UNAUTHORIZED or response.code == BAD_REQUEST:
-            # check to see if we need to re-authorize due to lost connection or bad request error
+            # check to see if we need to re-authorize due to lost connection or
+            # bad request error
             # only retry if using kerberos
             yield self._reset_all()
             if client.is_kerberos():
@@ -231,24 +232,13 @@ class WinRMSession(Session):
                     body_producer = _StringProducer(encrypted_request)
                     response = yield self._agent.request(
                         'POST', self._url, self._headers, body_producer)
-                except Exception as e:
+                except Exception:
                     raise
             if response.code == UNAUTHORIZED:
-                if self.is_kerberos():
-                    global kerberos
-                    if kerberos is None:
-                        import kerberos
-                    auth_header = response.headers.getRawHeaders('WWW-Authenticate')[0]
-                    auth_details = get_auth_details(auth_header)
-                    try:
-                        if auth_details:
-                            self._gssclient._step(auth_details)
-                    except kerberos.GSSError as e:
-                        msg = "HTTP Unauthorized received.  "
-                        "Kerberos error code {0}: {1}.".format(e.args[1][1], e.args[1][0])
-                        raise Exception(msg)
                 raise UnauthorizedError(
-                    "HTTP Unauthorized received: Check username and password")
+                    "Unauthorized to use winrm on {}. Must be Administrator"
+                    " or user given permissions to use winrm.".format(
+                        client._conn_info.hostname))
         if response.code == FORBIDDEN:
             raise ForbiddenError(
                 "Forbidden: Check WinRM port and version")
