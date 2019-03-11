@@ -217,43 +217,51 @@ class WinRMSession(Session):
 
     @inlineCallbacks
     def handle_response(self, request, response, client):
-        if response.code == UNAUTHORIZED or response.code == BAD_REQUEST:
-            # check to see if we need to re-authorize due to lost connection or
-            # bad request error
-            # only retry if using kerberos
-            yield self._reset_all()
-            if client.is_kerberos():
-                yield SESSION_MANAGER.init_connection(client, WinRMSession)
-                try:
-                    yield self._set_headers()
-                    encrypted_request = self._gssclient.encrypt_body(request)
-                    if not encrypted_request.startswith("--Encrypted Boundary"):
-                        self._headers.setRawHeaders('Content-Type', _CONTENT_TYPE['Content-Type'])
-                    body_producer = _StringProducer(encrypted_request)
-                    response = yield self._agent.request(
-                        'POST', self._url, self._headers, body_producer)
-                except Exception:
-                    raise
-            if response.code == UNAUTHORIZED:
-                raise UnauthorizedError(
-                    "Unauthorized to use winrm on {}. Must be Administrator"
-                    " or user given permissions to use winrm.".format(
-                        client._conn_info.hostname))
-        if response.code == FORBIDDEN:
-            raise ForbiddenError(
-                "Forbidden: Check WinRM port and version")
-        elif response.code != OK:
+        if response.code != OK:
+            # first get the error message out of the response so we
+            # don't encounter Decrypt Integrity Check errors
             if self.is_kerberos():
                 reader = _ErrorReader(self._gssclient)
             else:
                 reader = _ErrorReader()
             response.deliverBody(reader)
             message = yield reader.d
-            if 'maximum number of concurrent operations for this user has been exceeded' in message:
-                message += '  To fix this, increase the MaxConcurrentOperationsPerUser WinRM'\
-                           ' Configuration option to 4294967295 and restart the winrm service.'
-            raise RequestError("{}: HTTP status: {}. {}.".format(
-                client._conn_info.ipaddress, response.code, message))
+            if 'maximum number of concurrent operations for this user has '\
+                    'been exceeded' in message:
+                message += '  To fix this, increase the MaxConcurrentOperati'\
+                           'onsPerUser WinRM Configuration option to 4294967'\
+                           '295 and restart the winrm service.'
+            if response.code == UNAUTHORIZED or response.code == BAD_REQUEST:
+                # check to see if we need to re-authorize due to
+                # lost connection or bad request error
+                # only retry if using kerberos
+                yield self._reset_all()
+                if client.is_kerberos():
+                    yield SESSION_MANAGER.init_connection(client, WinRMSession)
+                    try:
+                        yield self._set_headers()
+                        encrypted_request = self._gssclient.encrypt_body(
+                            request)
+                        if not encrypted_request.startswith(
+                                "--Encrypted Boundary"):
+                            self._headers.setRawHeaders(
+                                'Content-Type', _CONTENT_TYPE['Content-Type'])
+                        body_producer = _StringProducer(encrypted_request)
+                        response = yield self._agent.request(
+                            'POST', self._url, self._headers, body_producer)
+                    except Exception:
+                        raise
+            if response.code == UNAUTHORIZED:
+                raise UnauthorizedError(
+                    "Unauthorized to use winrm on {}. Must be Administrator"
+                    " or user given permissions to use winrm".format(
+                        client._conn_info.hostname))
+            else:
+                raise RequestError("{}: HTTP status: {}. {}.".format(
+                    client._conn_info.ipaddress, response.code, message))
+        if response.code == FORBIDDEN:
+            raise ForbiddenError(
+                "Forbidden: Check WinRM port and version")
         returnValue(response)
 
     @inlineCallbacks
@@ -521,9 +529,10 @@ class LongCommandClient(WinRMClient):
     def __init__(self, conn_info):
         super(LongCommandClient, self).__init__(conn_info)
         self._shells = []
+        self._exit_codes = {}
 
     @inlineCallbacks
-    def start(self, command_line, ps_script=''):
+    def start(self, command_line, ps_script=None):
         """Start long running command.
 
         If running a powershell script, send it in separately with ps_script in
@@ -578,6 +587,7 @@ class LongCommandClient(WinRMClient):
         stdout_parts = _find_stream(receive_elem, shell_cmd[1], 'stdout')
         stderr_parts = _find_stream(receive_elem, shell_cmd[1], 'stderr')
         exit_code = _find_exit_code(receive_elem, shell_cmd[1])
+        self._exit_codes[shell_cmd] = exit_code
         stdout = _stripped_lines(stdout_parts)
         stderr = _stripped_lines(stderr_parts)
         returnValue(CommandResponse(stdout, stderr, exit_code))
@@ -593,14 +603,21 @@ class LongCommandClient(WinRMClient):
             try:
                 shell_cmd = self._shells[0]
             except IndexError:
-                # nothing to stop or delete, return empty
+                # nothing to stop or delete, return None
                 self.close_connection()
-                returnValue(CommandResponse([], [], 0))
+                returnValue(None)
         yield self._signal_ctrl_c(*shell_cmd)
+        response = None
         try:
-            response = yield self.receive()
-        except TimeoutError:
-            response = CommandResponse([], [], 0)
+            exit_code = self._exit_codes.pop(shell_cmd)
+        except KeyError:
+            exit_code = None
+        if exit_code is None:
+            # no exit code, so let's receive data
+            try:
+                response = yield self.receive()
+            except TimeoutError:
+                pass
         yield self._signal_terminate(*shell_cmd)
         yield self._delete_shell(shell_cmd[0])
         self.close_connection()

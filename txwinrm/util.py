@@ -447,7 +447,7 @@ def _authenticate_with_kerberos(conn_info, url, agent, gss_client=None):
             raise Exception(msg)
         raise UnauthorizedError(
             "Unauthorized to use winrm on {}. Must be Administrator or "
-            "user given permissions to use winrm.".format(
+            "user given permissions to use winrm".format(
                 conn_info.hostname))
     elif response.code == httplib.FORBIDDEN:
         raise ForbiddenError(
