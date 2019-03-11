@@ -9,11 +9,14 @@
 
 import sys
 import cmd
+import logging
 from pprint import pprint
-from twisted.internet import reactor, defer, task, threads
+from twisted.internet import reactor, defer, threads
 from . import app
-from .shell import create_remote_shell, create_long_running_command
+from .shell import create_remote_shell
 from .WinRMClient import SingleCommandClient, LongCommandClient
+
+LOG = logging.getLogger('winrm')
 
 
 def print_output(stdout, stderr):
@@ -54,117 +57,98 @@ class WinrsCmd(cmd.Cmd):
         print
 
 
-@defer.inlineCallbacks
-def long_running_main(args):
-    try:
-        client = LongCommandClient(args.conn_info)
-        shell_cmd = yield client.start(args.cmd)
-        for i in xrange(5):
-            response = yield client.receive(shell_cmd)
-            print_output(response.stdout, response.stderr)
-            if response.exit_code is not None:
-                break
-        yield client.stop(shell_cmd)
-    finally:
-        app.stop_reactor()
-
-
-@defer.inlineCallbacks
-def long_running_powershell(args):
-    try:
-        client = LongCommandClient(args.conn_info)
-        shell_cmd = yield client.start('powershell -NoLogo -NonInteractive'
-                                       ' -NoProfile -Command ', args.command)
-        for i in xrange(5):
-            response = yield client.receive(shell_cmd)
-            print_output(response.stdout, response.stderr)
-            if response.exit_code is not None:
-                break
-        yield client.stop(shell_cmd)
-    finally:
-        app.stop_reactor()
-
-
-@defer.inlineCallbacks
-def interactive_main(args):
-    shell = create_remote_shell(args.conn_info)
-    response = yield shell.create()
-    intro = '\n'.join(response.stdout)
-    winrs_cmd = WinrsCmd(shell)
-    reactor.callInThread(winrs_cmd.cmdloop, intro)
-
-
-@defer.inlineCallbacks
-def batch_main(args):
-    hostname = args.conn_info.hostname
-    command = args.command
-    try:
-        shell = create_remote_shell(args.conn_info)
-        print 'Creating shell on {0}.'.format(hostname)
-        yield shell.create()
-        for i in range(10):
-            print '\nSending to {0}:\n  {1}'.format(hostname, command)
-            response = yield shell.run_command(command)
-            print '\nReceived from {0}:'.format(hostname)
-            print_output(response.stdout, response.stderr)
-        response = yield shell.delete()
-        print "\nDeleted shell on {0}.".format(hostname)
-        print_output(response.stdout, response.stderr)
-        print "\nExit code of shell on {0}: {1}".format(
-            hostname, response.exit_code)
-    finally:
-        app.stop_reactor()
-
-
-@defer.inlineCallbacks
-def single_shot_main(args):
-    try:
-        client = SingleCommandClient(args.conn_info)
-        results = yield client.run_command(args.command)
-        pprint(results)
-    finally:
-        app.stop_reactor()
-
-
-@defer.inlineCallbacks
-def powershell_main(args):
-    try:
-        client = LongCommandClient(args.conn_info)
-        shell_cmd = yield client.start('powershell -NoLogo -NonInteractive -NoProfile -Command ', args.command)
-        while True:
-            response = yield client.receive(shell_cmd)
-            print_output(response.stdout, response.stderr)
-            if response.exit_code is not None:
-                break
-        yield client.stop(shell_cmd)
-    finally:
-        app.stop_reactor()
-
-
 class WinrsUtility(object):
+    @defer.inlineCallbacks
+    def interactive_main(self, args):
+        shell = create_remote_shell(args.conn_info)
+        response = yield shell.create()
+        intro = '\n'.join(response.stdout)
+        winrs_cmd = WinrsCmd(shell)
+        reactor.callInThread(winrs_cmd.cmdloop, intro)
+
+    @defer.inlineCallbacks
+    def batch_main(self, args):
+        hostname = args.conn_info.hostname
+        command = args.command
+        try:
+            shell = create_remote_shell(args.conn_info)
+            print 'Creating shell on {0}.'.format(hostname)
+            yield shell.create()
+            for i in range(10):
+                print '\nSending to {0}:\n  {1}'.format(hostname, command)
+                response = yield shell.run_command(command)
+                print '\nReceived from {0}:'.format(hostname)
+                print_output(response.stdout, response.stderr)
+            response = yield shell.delete()
+            print "\nDeleted shell on {0}.".format(hostname)
+            print_output(response.stdout, response.stderr)
+            print "\nExit code of shell on {0}: {1}".format(
+                hostname, response.exit_code)
+        except Exception as e:
+            LOG.error(e.message)
+        finally:
+            app.stop_reactor()
+
+    @defer.inlineCallbacks
+    def single_shot_main(self, args):
+        try:
+            client = SingleCommandClient(args.conn_info)
+            results = yield client.run_command(args.command)
+            print_output(results.stdout, results.stderr)
+        except Exception as e:
+            LOG.error(e.message)
+        finally:
+            app.stop_reactor()
+
+    @defer.inlineCallbacks
+    def long_running_main(self, args):
+        try:
+            client = LongCommandClient(args.conn_info)
+            if args.kind == 'powershell':
+                shell_cmd = yield client.start(
+                    'powershell -NoLogo -NonInteractive '
+                    '-NoProfile -Command ', args.command)
+            else:
+                shell_cmd = yield client.start(args.command)
+            while True:
+                try:
+                    response = yield client.receive(shell_cmd)
+                except Exception as e:
+                    if 'OperationTimeout' in e.message:
+                        LOG.debug('OperationTimeout trying to receive.'
+                                  ' Attempting to receive again.')
+                        continue
+                print_output(response.stdout, response.stderr)
+                if response.exit_code is not None:
+                    break
+            response = yield client.stop(shell_cmd)
+            if response:
+                print_output(response.stdout, response.stderr)
+        except Exception as e:
+            LOG.error(e.message)
+        finally:
+            app.stop_reactor()
 
     def tx_main(self, args, config):
-        if args.kind == "long":
-            long_running_main(args)
+        if args.kind == "long" or args.kind == 'powershell':
+            self.long_running_main(args)
         elif args.kind == "single":
-            single_shot_main(args)
+            self.single_shot_main(args)
         elif args.kind == "batch":
-            batch_main(args)
-        elif args.kind == 'powershell':
-            powershell_main(args)
-        elif args.kind == 'long_powershell':
-            long_running_powershell(args)
+            self.batch_main(args)
         else:
-            interactive_main(args)
+            self.interactive_main(args)
 
     def add_args(self, parser):
         parser.add_argument(
             "kind", nargs='?', default="interactive",
-            choices=["interactive", "single", "batch", "long", "multiple", "powershell", "long_powershell"])
+            choices=["interactive", "single", "batch", "long", "multiple",
+                     "powershell"])
         parser.add_argument("--command", "-x")
 
     def check_args(self, args):
-        if not args.command and args.kind in ["single", "batch", "long", "multiple", "powershell", "long_powershell"]:
+        if not args.command and args.kind in ["single", "batch", "long",
+                                              "multiple", "powershell"]:
             print >>sys.stderr, \
                 "ERROR: {0} requires that you specify a command."
             return False
@@ -183,4 +167,5 @@ class WinrsUtility(object):
 
 
 if __name__ == '__main__':
+    LOG.setLevel(logging.INFO)
     app.main(WinrsUtility())

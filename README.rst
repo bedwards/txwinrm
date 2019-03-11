@@ -239,6 +239,7 @@ The winrs program has four modes of operation:
    executes a list of commands (actually right now it executes one
    command twice as a proof-of-concept)
 -  powershell: Run a powershell script.  This is NOT interactive.
+   Only enter the script here, not the powershell command.
 
 
 An example of interactive mode
