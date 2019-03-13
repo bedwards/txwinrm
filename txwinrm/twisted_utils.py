@@ -9,9 +9,14 @@
 
 from twisted.internet import defer, error, reactor
 from twisted.python import failure
+from twisted.web._newclient import ResponseNeverReceived
 
 
-def with_timeout(fn, args=None, kwargs=None, seconds=None, exception_class=error.TimeoutError):
+def with_timeout(fn,
+                 args=None,
+                 kwargs=None,
+                 seconds=None,
+                 exception_class=error.TimeoutError):
     """Execute asynchronous function fn(*args, **kwargs) with a timeout."""
     return add_timeout(
         deferred=fn(*args, **kwargs),
@@ -33,7 +38,17 @@ def add_timeout(deferred, seconds, exception_class=error.TimeoutError):
 
     def handle_result(result):
         is_failure = isinstance(result, failure.Failure)
-        is_cancelled = is_failure and isinstance(result.value, defer.CancelledError)
+        is_cancelled = is_failure and isinstance(result.value,
+                                                 defer.CancelledError)
+
+        # With twisted.web._newclient, errors may be wrapped in a
+        # 'ResponseNeverReceived', including CancelledError.  If it is,
+        # set is_cancelled.
+        if is_failure and isinstance(result.value, ResponseNeverReceived):
+            if any([isinstance(x, failure.Failure) and
+                    isinstance(x.value, defer.CancelledError)
+                    for x in result.value.reasons]):
+                is_cancelled = True
 
         if delayed_timeout.active():
             # Cancel the timeout since a result came before it fired.
