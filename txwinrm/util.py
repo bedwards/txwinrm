@@ -25,7 +25,7 @@ from twisted.internet.ssl import ClientContextFactory
 from twisted.web.http_headers import Headers
 from twisted.internet.threads import deferToThread
 from . import constants as c
-from twisted_utils import add_timeout, with_timeout
+from twisted_utils import add_timeout
 
 from .krb5 import kinit, ccname, add_trusted_realm, config
 
@@ -251,10 +251,10 @@ class AuthGSSClient(object):
                 raise Exception('kerberos authGSSClientClean failed')
 
     def _step(self, challenge=''):
-        """
-        Processes a single GSSAPI client-side step using the supplied server
-        data.  Run through a DeferredSemaphore dedicated to the host so that
-        only one SPN is obtained
+        """Process a single GSSAPI client-side step.
+
+        Uses the supplied server data. Run through a deferToThread
+        so we do not block.
 
         @param challenge: a string containing the base64-encoded server data
             (which may be empty for the first step).
@@ -264,17 +264,11 @@ class AuthGSSClient(object):
             self._conn_info.hostname, challenge))
 
         def gss_step_sem():
-            # Because this is in a single semaphore, no other request
-            # will overwrite the KRB5CCNAME env variable
             os.environ['KRB5CCNAME'] = ccname(self._conn_info.username)
+            log.debug('set KRB5CCNAME to {}'.format(os.environ['KRB5CCNAME']))
             return kerberos.authGSSClientStep(self._context, challenge)
 
-        return GSS_SEM.run(
-            with_timeout,
-            fn=deferToThread,
-            args=(gss_step_sem,),
-            kwargs={},
-            seconds=self._conn_info.timeout)
+        return deferToThread(gss_step_sem)
 
     @defer.inlineCallbacks
     def get_base64_client_data(self, challenge=''):
