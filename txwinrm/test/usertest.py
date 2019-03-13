@@ -73,8 +73,8 @@ class WinrmCollectClient(object):
             assert(conn_info.username.lower() == authGSSClientUserName(
                 client.session()._gssclient._context).lower())
         except Exception:
-            print 'Expected and Actual usernames do not match for host {}'\
-                .format(conn_info.hostname)
+            print 'ERROR: Expected and Actual usernames do not match for host'\
+                  ' {}'.format(conn_info.hostname)
             print 'Expected username: {}, Actual username {}'.format(
                 conn_info.username,
                 authGSSClientUserName(client.session()._gssclient._context))
@@ -92,6 +92,9 @@ def user_run():
     parser = RawConfigParser(allow_no_value=True)
     parser.read('./txwinrm/test/usertest.ini')
     setup = {}
+    debug = parser.get('options', 'debug')
+    if debug.lower() == 'true':
+        log.setLevel(level=logging.DEBUG)
     for k, v in parser.items('setup'):
         server, option = k.split('.')
         if server not in setup.keys():
@@ -122,7 +125,6 @@ def user_run():
 
 
 if __name__ == '__main__':
-    import logging
     from twisted.internet import reactor
     reactor.callWhenRunning(user_run)
     reactor.run()
