@@ -67,6 +67,7 @@ from .SessionManager import SESSION_MANAGER, Session, copy
 from .twisted_utils import add_timeout, with_timeout
 kerberos = None
 LOG = logging.getLogger('winrm')
+KRB5_SEM = DeferredSemaphore(1)
 
 
 class ShellException(Exception):
@@ -164,16 +165,37 @@ class WinRMSession(Session):
             returnValue(self._gssclient)
         if client:
             self.update_conn_info(client)
-        self._url = "{c.scheme}://{c.ipaddress}:{c.port}/wsman".format(c=self._conn_info)
+        self._url = "{c.scheme}://{c.ipaddress}:{c.port}/wsman".format(
+            c=self._conn_info)
         if self.is_kerberos():
             try:
-                self._token = self._gssclient = yield _authenticate_with_kerberos(self._conn_info, self._url, self._agent)
+                # run through single semaphore so that we can allow
+                # for multiple users. gss uses KRB5CCNAME to determine
+                # cache to use, so we must make sure that the env variable
+                # is not overwritten.
+                self._token = self._gssclient = yield KRB5_SEM.run(
+                    with_timeout,
+                    fn=_authenticate_with_kerberos,
+                    args=(self._conn_info,
+                          self._url,
+                          self._agent),
+                    kwargs={},
+                    seconds=self._conn_info.timeout)
             except Exception as e:
                 global kerberos
                 import kerberos
-                if isinstance(e, kerberos.GSSError) and 'The referenced context has expired' in e.args[0][0]:
-                    LOG.debug('found The referenced context has expired, starting over')
-                    self._token = self._gssclient = yield _authenticate_with_kerberos(self._conn_info, self._url, self._agent)
+                if isinstance(e, kerberos.GSSError) and 'The referenced '\
+                        'context has expired' in e.args[0][0]:
+                    LOG.debug('found The referenced context has expired,'
+                              ' starting over')
+                    self._token = self._gssclient = yield KRB5_SEM.run(
+                        with_timeout,
+                        fn=_authenticate_with_kerberos,
+                        args=(self._conn_info,
+                              self._url,
+                              self._agent),
+                        kwargs={},
+                        seconds=self._conn_info.timeout)
                 else:
                     raise
             returnValue(self._gssclient)
