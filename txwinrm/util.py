@@ -465,7 +465,7 @@ def _authenticate_with_kerberos(conn_info, url, agent, gss_client=None):
 
 
 def update_conn_info(old_conn_info, new_conn_info):
-    if old_conn_info is None:
+    if old_conn_info is None or not hasattr(old_conn_info, 'connect_timeout'):
         return(ConnectionInfo(hostname=new_conn_info.hostname,
                               auth_type=new_conn_info.auth_type,
                               username=new_conn_info.username,
