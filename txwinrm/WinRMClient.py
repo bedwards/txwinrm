@@ -702,11 +702,14 @@ class EnumerateClient(WinRMClient):
 
     @inlineCallbacks
     def do_collect(self, enum_infos):
-        """Run enumerations in the session's semaphore.  Windows must finish
-        an enumeration before a new command or enumeration can start
+        """Run enumerations in the session's semaphore.
+
+        Windows must finish an enumeration before a new
+        command or enumeration can start
         """
         items = {}
-        yield self.init_connection()
+        if not self.is_connected():
+            yield self.init_connection()
         for enum_info in enum_infos:
             try:
                 items[enum_info] = yield self.session().semrun(
