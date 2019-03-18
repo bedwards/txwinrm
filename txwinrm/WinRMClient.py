@@ -314,6 +314,14 @@ class WinRMSession(Session):
             self._logout_dc = None
         except Exception:
             pass
+        if self._login_d and not self._login_d.called:
+            # check for a reconnection attempt so we do not send any requests
+            # to a dead connection or try to check the context lifetime on an
+            # unestablished connection
+            self._token = yield self._login_d
+        if self._token is None:
+            # no login attempt occurred, so initiate connection
+            yield client.init_connection()
         if client.is_kerberos():
             # lazy import
             global kerberos
@@ -330,12 +338,7 @@ class WinRMSession(Session):
                     yield add_timeout(d, lifetime)
                 except Exception:
                     pass
-        if self._token is None:
-            yield client.init_connection()
-        if self._login_d and not self._login_d.called:
-            # check for a reconnection attempt so we do not send any requests
-            # to a dead connection
-            self._token = yield self._login_d
+                yield client.init_connection()
         kwargs['envelope_size'] = envelope_size or self._conn_info.envelope_size
         kwargs['locale'] = locale or self._conn_info.locale
         kwargs['code_page'] = code_page or self._conn_info.code_page
