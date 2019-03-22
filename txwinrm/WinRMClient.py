@@ -136,6 +136,15 @@ class WinRMSession(Session):
             seconds=self._conn_info.timeout)
 
     def is_kerberos(self):
+        """Check for kerberos connection.
+
+        use a lazy import. any kerberos reference in this module
+        will call this method first so there will be no AttributeErrors
+        for referencing the kerberos module without it being imported
+        """
+        global kerberos
+        if not kerberos:
+            import kerberos
         return self._conn_info.auth_type == 'kerberos'
 
     def decrypt_body(self, body):
@@ -158,6 +167,21 @@ class WinRMSession(Session):
         self._conn_info = update_conn_info(self._conn_info, client._conn_info)
 
     @inlineCallbacks
+    def run_authenticate(self):
+        # run through single semaphore so that we can allow
+        # for multiple users. gss uses KRB5CCNAME to determine
+        # cache to use, so we must make sure that the env variable
+        # is not overwritten.
+        self._token = self._gssclient = yield KRB5_SEM.run(
+            with_timeout,
+            fn=_authenticate_with_kerberos,
+            args=(self._conn_info,
+                  self._url,
+                  self._agent),
+            kwargs={},
+            seconds=self._conn_info.timeout)
+
+    @inlineCallbacks
     def _deferred_login(self, client=None):
         if self._agent is None:
             self._agent = _get_agent()
@@ -169,33 +193,13 @@ class WinRMSession(Session):
             c=self._conn_info)
         if self.is_kerberos():
             try:
-                # run through single semaphore so that we can allow
-                # for multiple users. gss uses KRB5CCNAME to determine
-                # cache to use, so we must make sure that the env variable
-                # is not overwritten.
-                self._token = self._gssclient = yield KRB5_SEM.run(
-                    with_timeout,
-                    fn=_authenticate_with_kerberos,
-                    args=(self._conn_info,
-                          self._url,
-                          self._agent),
-                    kwargs={},
-                    seconds=self._conn_info.timeout)
+                yield self.run_authenticate()
             except Exception as e:
-                global kerberos
-                import kerberos
                 if isinstance(e, kerberos.GSSError) and 'The referenced '\
                         'context has expired' in e.args[0][0]:
                     LOG.debug('found The referenced context has expired,'
                               ' starting over')
-                    self._token = self._gssclient = yield KRB5_SEM.run(
-                        with_timeout,
-                        fn=_authenticate_with_kerberos,
-                        args=(self._conn_info,
-                              self._url,
-                              self._agent),
-                        kwargs={},
-                        seconds=self._conn_info.timeout)
+                    yield self.run_authenticate()
                 else:
                     raise
             returnValue(self._gssclient)
@@ -278,7 +282,8 @@ class WinRMSession(Session):
                     "Unauthorized to use winrm on {}. Must be Administrator"
                     " or user given permissions to use winrm".format(
                         client._conn_info.hostname))
-            else:
+            elif response.code != OK:
+                # raise error on anything other than ok
                 raise RequestError("{}: HTTP status: {}. {}.".format(
                     client._conn_info.ipaddress, response.code, message))
         if response.code == FORBIDDEN:
@@ -307,58 +312,90 @@ class WinRMSession(Session):
         returnValue(ET.fromstring(xml_str))
 
     @inlineCallbacks
-    def _send_request(self, request_template_name, client, envelope_size=None,
-                      locale=None, code_page=None, **kwargs):
-        try:
-            self._logout_dc.cancel()
-            self._logout_dc = None
-        except Exception:
-            pass
+    def check_lifetime(self, client):
+        """Check to see if our ticket is going to expire soon."""
+        lifetime = self._gssclient.context_lifetime()
+        if lifetime <= self._lifetime_limit:
+            # go ahead and kill the connection
+            # defer until it does expire and reinit
+            d = Deferred()
+            yield self._reset_all()
+            try:
+                yield add_timeout(d, lifetime + 1)
+            except Exception:
+                pass
+            yield client.init_connection()
+        returnValue(None)
+
+    @inlineCallbacks
+    def wait_for_connection(self, client):
+        """Wait until connection established."""
         if self._login_d and not self._login_d.called:
             # check for a reconnection attempt so we do not send any requests
             # to a dead connection or try to check the context lifetime on an
             # unestablished connection
             self._token = yield self._login_d
-        if self._token is None:
-            # no login attempt occurred, so initiate connection
+        if self._token is None or (self.is_kerberos() and self._gssclient is None):
+            # no token or gssclient, if kerberos, so initiate connection
             yield client.init_connection()
-        if client.is_kerberos():
-            # lazy import
-            global kerberos
-            if not kerberos:
-                import kerberos
-            # check to see if our ticket is going to expire soon
-            # go ahead and kill the connection
-            # defer until it does expire and reinit
-            lifetime = self._gssclient.context_lifetime()
-            if lifetime <= self._lifetime_limit:
-                d = Deferred()
-                yield self._reset_all()
-                try:
-                    yield add_timeout(d, lifetime)
-                except Exception:
-                    pass
-                yield client.init_connection()
-        kwargs['envelope_size'] = envelope_size or self._conn_info.envelope_size
-        kwargs['locale'] = locale or self._conn_info.locale
-        kwargs['code_page'] = code_page or self._conn_info.code_page
-        LOG.debug('{} sending request: {} {}'.format(
-            self._conn_info.hostname, request_template_name, kwargs))
-        request = _get_request_template(request_template_name).format(**kwargs)
+        returnValue(None)
+
+    def prep_request(self, request_template_name, **kwargs):
+        """Prepare request and body_producer."""
+        request = _get_request_template(request_template_name).format(
+            **kwargs)
         self._headers = self._set_headers()
         if self.is_kerberos():
             encrypted_request = self._gssclient.encrypt_body(request)
             if not encrypted_request.startswith("--Encrypted Boundary"):
-                self._headers.setRawHeaders('Content-Type', _CONTENT_TYPE['Content-Type'])
+                self._headers.setRawHeaders(
+                    'Content-Type',
+                    _CONTENT_TYPE['Content-Type'])
             body_producer = _StringProducer(encrypted_request)
         else:
             body_producer = _StringProducer(request)
+        return request, body_producer
+
+    @inlineCallbacks
+    def _send_request(self, request_template_name, client, envelope_size=None,
+                      locale=None, code_page=None, **kwargs):
+        try:
+            # cancel logout attempt
+            self._logout_dc.cancel()
+            self._logout_dc = None
+        except Exception:
+            pass
+        yield self.wait_for_connection(client)
+        if client.is_kerberos():
+            yield self.check_lifetime(client)
+        kwargs['envelope_size'] = envelope_size or\
+            self._conn_info.envelope_size
+        kwargs['locale'] = locale or self._conn_info.locale
+        kwargs['code_page'] = code_page or self._conn_info.code_page
+        LOG.debug('{} sending request: {} {}'.format(
+            self._conn_info.hostname, request_template_name, kwargs))
+        request, body_producer = self.prep_request(
+            request_template_name,
+            **kwargs)
         try:
             response = yield self._agent.request(
                 'POST', self._url, self._headers, body_producer)
         except Exception as e:
-            LOG.debug('{} exception sending request: {}'.format(self._conn_info.hostname, e))
-            raise
+            if isinstance(e, kerberos.GSSError) and 'The referenced '\
+                    'context has expired' in e.args[0][0]:
+                # tried to use expired context, retry
+                LOG.debug('found The referenced context has expired,'
+                          ' resetting connection and resending request')
+                yield self._reset_all()
+                response = yield self._send_request(
+                    request_template_name,
+                    client,
+                    envelope_size=envelope_size,
+                    **kwargs)
+            else:
+                LOG.debug('{} exception sending request: {}'.format(
+                    self._conn_info.hostname, e))
+                raise
         LOG.debug('{} received response {} {}'.format(
             self._conn_info.hostname, response.code, request_template_name))
         response = yield self.handle_response(request, response, client)
@@ -378,7 +415,13 @@ class WinRMClient(object):
         self._lifetime_limit = lifetime_limit
 
     def is_connected(self):
-        if self.session() and self.session()._agent:
+        session = self.session()
+        if session and session._agent and session._token:
+            if session.is_kerberos():
+                if session._gssclient:
+                    return True
+                else:
+                    return False
             return True
         else:
             return False
