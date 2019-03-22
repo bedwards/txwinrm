@@ -381,8 +381,6 @@ class WinRMSession(Session):
             response = yield self._agent.request(
                 'POST', self._url, self._headers, body_producer)
         except Exception as e:
-            print '{} exception sending request: {}'.format(
-                self._conn_info.hostname, e)
             if isinstance(e, kerberos.GSSError) and 'The referenced '\
                     'context has expired' in e.args[0][0]:
                 # tried to use expired context, retry
