@@ -11,6 +11,7 @@ import logging
 from collections import namedtuple
 from httplib import BAD_REQUEST, UNAUTHORIZED, FORBIDDEN, OK
 
+from twisted.internet import reactor
 from twisted.internet.defer import (
     inlineCallbacks,
     returnValue,
@@ -224,19 +225,36 @@ class WinRMSession(Session):
         # gssclient will no longer be valid so get rid of it
         # set token to None so the next client will reinitialize
         #   the connection
-        yield self._reset_all()
+        self.reset_all()
+        returnValue(None)
 
     @inlineCallbacks
-    def _reset_all(self):
+    def _reset_all(self, gssclient, agent):
+        if gssclient is not None:
+            gssclient.cleanup()
+            gssclient = None
+        yield self.close_cached_connections()
+        if agent:
+            agent._pool = None
+        agent = None
+        returnValue(None)
+
+    def reset_all(self):
+        """Reset instance variables.
+
+        fire deferred to close existing connections and
+        set our variables to None so we don't initiate a new
+        connection before close_cached_connections finishes.
+        """
+        reactor.callWhenRunning(
+            self._reset_all,
+            self._gssclient,
+            self._agent,
+        )
         self._token = None
         self._login_d = None
-        if self._gssclient is not None:
-            self._gssclient.cleanup()
-            self._gssclient = None
-        yield self.close_cached_connections()
-        if self._agent:
-            self._agent._pool = None
-            self._agent = None
+        self._gssclient = None
+        self._agent = None
         self._headers = None
         self._url = None
         returnValue(None)
@@ -261,9 +279,9 @@ class WinRMSession(Session):
                 # check to see if we need to re-authorize due to
                 # lost connection or bad request error
                 # only retry if using kerberos
-                yield self._reset_all()
+                self.reset_all()
                 if client.is_kerberos():
-                    yield SESSION_MANAGER.init_connection(client, WinRMSession)
+                    yield self.wait_for_connection(client)
                     try:
                         yield self._set_headers()
                         encrypted_request = self._gssclient.encrypt_body(
@@ -319,7 +337,7 @@ class WinRMSession(Session):
             # go ahead and kill the connection
             # defer until it does expire and reinit
             d = Deferred()
-            yield self._reset_all()
+            self.reset_all()
             try:
                 yield add_timeout(d, lifetime + 1)
             except Exception:
@@ -335,17 +353,21 @@ class WinRMSession(Session):
             # to a dead connection or try to check the context lifetime on an
             # unestablished connection
             self._token = yield self._login_d
-        if self._token is None or (self.is_kerberos() and self._gssclient is None):
+        if self._token is None or\
+                (self.is_kerberos() and self._gssclient is None):
             # no token or gssclient, if kerberos, so initiate connection
             yield client.init_connection()
         returnValue(None)
 
-    def prep_request(self, request_template_name, **kwargs):
+    @inlineCallbacks
+    def prep_request(self, client, request_template_name, **kwargs):
         """Prepare request and body_producer."""
         request = _get_request_template(request_template_name).format(
             **kwargs)
         self._headers = self._set_headers()
         if self.is_kerberos():
+            if not self._gssclient:
+                yield self.wait_for_connection(client)
             encrypted_request = self._gssclient.encrypt_body(request)
             if not encrypted_request.startswith("--Encrypted Boundary"):
                 self._headers.setRawHeaders(
@@ -354,7 +376,7 @@ class WinRMSession(Session):
             body_producer = _StringProducer(encrypted_request)
         else:
             body_producer = _StringProducer(request)
-        return request, body_producer
+        returnValue((request, body_producer))
 
     @inlineCallbacks
     def _send_request(self, request_template_name, client, envelope_size=None,
@@ -374,7 +396,8 @@ class WinRMSession(Session):
         kwargs['code_page'] = code_page or self._conn_info.code_page
         LOG.debug('{} sending request: {} {}'.format(
             self._conn_info.hostname, request_template_name, kwargs))
-        request, body_producer = self.prep_request(
+        request, body_producer = yield self.prep_request(
+            client,
             request_template_name,
             **kwargs)
         try:
@@ -386,7 +409,7 @@ class WinRMSession(Session):
                 # tried to use expired context, retry
                 LOG.debug('found The referenced context has expired,'
                           ' resetting connection and resending request')
-                yield self._reset_all()
+                self.reset_all()
                 response = yield self._send_request(
                     request_template_name,
                     client,
