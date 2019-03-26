@@ -68,7 +68,7 @@ class WinrmCollectClient(WinRMClient):
             if lifetime <= 60:
                 break
             t_print('kill connection')
-            yield self.session()._reset_all()
+            self.session().reset_all()
             d = defer.Deferred()
             try:
                 t_print('sleep 60 seconds')
