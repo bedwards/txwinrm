@@ -208,15 +208,17 @@ class WinRMSession(Session):
             returnValue('basic_auth_token')
 
     @inlineCallbacks
-    def close_cached_connections(self):
+    def close_cached_connections(self, agent=None):
         # close connections so we do not end up with orphans
         # return a Deferred()
-        if self._agent and hasattr(self._agent, 'closeCachedConnections'):
+        if not agent:
+            agent = self._agent
+        if agent and hasattr(agent, 'closeCachedConnections'):
             # twisted 11 has no return and is part of the Agent
-            self._agent.closeCachedConnections()
-        elif self._agent:
+            agent.closeCachedConnections()
+        elif agent:
             # twisted 12 has a pool
-            yield self._agent._pool.closeCachedConnections()
+            yield agent._pool.closeCachedConnections()
         returnValue(None)
 
     @inlineCallbacks
@@ -233,7 +235,7 @@ class WinRMSession(Session):
         if gssclient is not None:
             gssclient.cleanup()
             gssclient = None
-        yield self.close_cached_connections()
+        yield self.close_cached_connections(agent)
         if agent:
             agent._pool = None
         agent = None
@@ -247,6 +249,7 @@ class WinRMSession(Session):
         connection before close_cached_connections finishes.
         """
         reactor.callWhenRunning(
+            0,
             self._reset_all,
             self._gssclient,
             self._agent,
@@ -275,6 +278,9 @@ class WinRMSession(Session):
                 message += '  To fix this, increase the MaxConcurrentOperati'\
                            'onsPerUser WinRM Configuration option to 4294967'\
                            '295 and restart the winrm service.'
+                raise RequestError("{}: HTTP status: {}. {}.".format(
+                    client._conn_info.ipaddress, response.code, message))
+            new_response = False
             if response.code == UNAUTHORIZED or response.code == BAD_REQUEST:
                 # check to see if we need to re-authorize due to
                 # lost connection or bad request error
@@ -283,7 +289,7 @@ class WinRMSession(Session):
                 if client.is_kerberos():
                     yield self.wait_for_connection(client)
                     try:
-                        yield self._set_headers()
+                        self._set_headers()
                         encrypted_request = self._gssclient.encrypt_body(
                             request)
                         if not encrypted_request.startswith(
@@ -293,6 +299,7 @@ class WinRMSession(Session):
                         body_producer = _StringProducer(encrypted_request)
                         response = yield self._agent.request(
                             'POST', self._url, self._headers, body_producer)
+                        new_response = True
                     except Exception:
                         raise
             if response.code == UNAUTHORIZED:
@@ -302,6 +309,13 @@ class WinRMSession(Session):
                         client._conn_info.hostname))
             elif response.code != OK:
                 # raise error on anything other than ok
+                if new_response:
+                    if self.is_kerberos():
+                        reader = _ErrorReader(self._gssclient)
+                    else:
+                        reader = _ErrorReader()
+                    response.deliverBody(reader)
+                    message = yield reader.d
                 raise RequestError("{}: HTTP status: {}. {}.".format(
                     client._conn_info.ipaddress, response.code, message))
         if response.code == FORBIDDEN:
@@ -568,7 +582,10 @@ class SingleCommandClient(WinRMClient):
             if isinstance(e, TimeoutError):
                 yield self.close_cached_connections()
             self.close_connection()
-            raise
+            if isinstance(e, Exception):
+                raise
+            else:
+                raise e
         returnValue(cmd_response)
 
     @inlineCallbacks
