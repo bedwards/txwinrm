@@ -249,7 +249,6 @@ class WinRMSession(Session):
         connection before close_cached_connections finishes.
         """
         reactor.callWhenRunning(
-            0,
             self._reset_all,
             self._gssclient,
             self._agent,
