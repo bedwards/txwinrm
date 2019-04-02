@@ -264,7 +264,6 @@ class WinRMSession(Session):
         self._agent = None
         self._headers = None
         self._url = None
-        returnValue(None)
 
     @inlineCallbacks
     def handle_response(self, request, response, client):
@@ -312,10 +311,17 @@ class WinRMSession(Session):
                 except Exception:
                     raise
         if response.code == UNAUTHORIZED:
-            raise UnauthorizedError(
-                "Unauthorized to use winrm on {}. Must be Administrator"
-                " or user given permissions to use winrm".format(
-                    client._conn_info.hostname))
+            if client.is_kerberos():
+                raise UnauthorizedError(
+                    "Unauthorized to use winrm on {}. User must be "
+                    "Administrator or given permissions to use the "
+                    " winrm service".format(
+                        client._conn_info.hostname))
+            else:
+                raise UnauthorizedError(
+                    "Unauthorized to use winrm on {}. Check username"
+                    " and password".format(
+                        client._conn_info.hostname))
         elif response.code != OK:
             # raise error on anything other than ok
             if new_response:
