@@ -148,9 +148,6 @@ class WinRMSession(Session):
         will call this method first so there will be no AttributeErrors
         for referencing the kerberos module without it being imported
         """
-        global kerberos
-        if not kerberos:
-            import kerberos
         return self._conn_info.auth_type == 'kerberos'
 
     def decrypt_body(self, body):
@@ -296,6 +293,7 @@ class WinRMSession(Session):
             self.reset_all()
             if client.is_kerberos():
                 yield self.wait_for_connection(client)
+                yield self.check_lifetime(client)
                 try:
                     self._set_headers()
                     encrypted_request = self._gssclient.encrypt_body(
@@ -308,8 +306,11 @@ class WinRMSession(Session):
                     response = yield self._agent.request(
                         'POST', self._url, self._headers, body_producer)
                     new_response = True
-                except Exception:
-                    raise
+                except Exception as e:
+                    if isinstance(e, Exception):
+                        raise
+                    else:
+                        raise e
         if response.code == UNAUTHORIZED:
             if client.is_kerberos():
                 raise UnauthorizedError(
@@ -359,6 +360,8 @@ class WinRMSession(Session):
     @inlineCallbacks
     def check_lifetime(self, client):
         """Check to see if our ticket is going to expire soon."""
+        if not self._gssclient:
+            yield self.wait_for_connection(client)
         lifetime = self._gssclient.context_lifetime()
         if lifetime <= self._lifetime_limit:
             # go ahead and kill the connection
@@ -445,7 +448,10 @@ class WinRMSession(Session):
             else:
                 LOG.debug('{} exception sending request: {}'.format(
                     self._conn_info.hostname, e))
-                raise
+                if isinstance(e, Exception):
+                    raise
+                else:
+                    raise e
         LOG.debug('{} received response {} {}'.format(
             self._conn_info.hostname, response.code, request_template_name))
         if response.code != OK:
@@ -460,6 +466,10 @@ class WinRMClient(object):
     Contains core functionality for various types of winrm based clients
     """
     def __init__(self, conn_info, lifetime_limit=5):
+        global kerberos
+        if not kerberos:
+            import kerberos
+
         verify_conn_info(conn_info)
         self.key = None
         self._conn_info = update_conn_info(None, conn_info)
@@ -633,7 +643,18 @@ class SingleCommandClient(WinRMClient):
         stdout_parts = []
         stderr_parts = []
         for i in xrange(_MAX_REQUESTS_PER_COMMAND):
-            receive_elem = yield self._send_receive(shell_id, command_id)
+            try:
+                receive_elem = yield self._send_receive(shell_id, command_id)
+            except Exception as e:
+                if isinstance(e, kerberos.GSSError) and 'The referenced '\
+                        'context has expired' in e.args[0][0]:
+                    LOG.debug('found The referenced context has expired,'
+                              ' try to receive again')
+                    continue
+                elif isinstance(e, Exception):
+                    raise
+                else:
+                    raise e
             stdout_parts.extend(
                 _find_stream(receive_elem, command_id, 'stdout'))
             stderr_parts.extend(
