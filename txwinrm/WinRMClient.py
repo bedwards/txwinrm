@@ -39,7 +39,6 @@ from .util import (
     _get_basic_auth_header,
     _get_request_template,
     _StringProducer,
-    get_auth_details,
     UnauthorizedError,
     ForbiddenError,
     RequestError,
@@ -204,7 +203,7 @@ class WinRMSession(Session):
                               ' starting over')
                     yield self.run_authenticate()
                 else:
-                    raise
+                    raise e
             returnValue(self._gssclient)
         else:
             returnValue('basic_auth_token')
@@ -307,10 +306,7 @@ class WinRMSession(Session):
                         'POST', self._url, self._headers, body_producer)
                     new_response = True
                 except Exception as e:
-                    if isinstance(e, Exception):
-                        raise
-                    else:
-                        raise e
+                    raise e
         if response.code == UNAUTHORIZED:
             if client.is_kerberos():
                 raise UnauthorizedError(
@@ -448,10 +444,7 @@ class WinRMSession(Session):
             else:
                 LOG.debug('{} exception sending request: {}'.format(
                     self._conn_info.hostname, e))
-                if isinstance(e, Exception):
-                    raise
-                else:
-                    raise e
+                raise e
         LOG.debug('{} received response {} {}'.format(
             self._conn_info.hostname, response.code, request_template_name))
         if response.code != OK:
@@ -600,17 +593,7 @@ class SingleCommandClient(WinRMClient):
         else:
             self.key = (self._conn_info.ipaddress, 'short', command_line)
         yield self.init_connection()
-        try:
-            run_cmd_d = self.run_single_command(command_line)
-            cmd_response = yield add_timeout(run_cmd_d, self._conn_info.timeout)
-        except Exception as e:
-            if isinstance(e, TimeoutError):
-                yield self.close_cached_connections()
-            self.close_connection()
-            if isinstance(e, Exception):
-                raise
-            else:
-                raise e
+        cmd_response = yield self.run_single_command(command_line)
         returnValue(cmd_response)
 
     @inlineCallbacks
@@ -625,36 +608,43 @@ class SingleCommandClient(WinRMClient):
                 .stderr = [<non-empty, stripped line>, ...]
                 .exit_code = <int>
         """
-        shell_id = yield self._create_shell()
-        cmd_response = None
         try:
-            cmd_response = yield self._run_command(shell_id, command_line)
+            shell_id = yield add_timeout(self._create_shell(),
+                                         self._conn_info.timeout)
         except Exception as e:
             if isinstance(e, TimeoutError):
                 yield self.close_cached_connections()
-            raise
+            self.close_connection()
+            raise e
+        cmd_response = None
+        cmd_response = yield self._run_command(shell_id, command_line)
         self.close_connection()
         returnValue(cmd_response)
 
     @inlineCallbacks
     def _run_command(self, shell_id, command_line):
-        command_elem = yield self._send_command(shell_id, command_line)
+        try:
+            cmd_d = self._send_command(shell_id, command_line)
+            command_elem = yield add_timeout(cmd_d, self._conn_info.timeout)
+        except Exception as e:
+            if isinstance(e, TimeoutError):
+                yield self.close_cached_connections()
+            self.close_connection()
+            raise e
         command_id = _find_command_id(command_elem)
         stdout_parts = []
         stderr_parts = []
         for i in xrange(_MAX_REQUESTS_PER_COMMAND):
             try:
-                receive_elem = yield self._send_receive(shell_id, command_id)
+                receive_d = self._send_receive(shell_id, command_id)
+                receive_elem = yield add_timeout(receive_d, self._conn_info.timeout)
             except Exception as e:
                 if isinstance(e, kerberos.GSSError) and 'The referenced '\
                         'context has expired' in e.args[0][0]:
                     LOG.debug('found The referenced context has expired,'
                               ' try to receive again')
                     continue
-                elif isinstance(e, Exception):
-                    raise
-                else:
-                    raise e
+                raise e
             stdout_parts.extend(
                 _find_stream(receive_elem, command_id, 'stdout'))
             stderr_parts.extend(
@@ -664,10 +654,22 @@ class SingleCommandClient(WinRMClient):
                 break
         else:
             raise Exception("Reached max requests per command.")
-        yield self._signal_terminate(shell_id, command_id)
+        try:
+            yield self._signal_terminate(shell_id, command_id)
+        except Exception as e:
+            if isinstance(e, TimeoutError):
+                yield self.close_cached_connections()
+            self.close_connection()
+            raise e
         stdout = _stripped_lines(stdout_parts)
         stderr = _stripped_lines(stderr_parts)
-        yield self._delete_shell(shell_id)
+        try:
+            yield self._delete_shell(shell_id)
+        except Exception as e:
+            if isinstance(e, TimeoutError):
+                yield self.close_cached_connections()
+            self.close_connection()
+            raise e
         returnValue(CommandResponse(stdout, stderr, exit_code))
 
 
@@ -729,9 +731,8 @@ class LongCommandClient(WinRMClient):
                                      'receive output.')
         try:
             receive_elem = yield self._send_receive(*shell_cmd)
-        except Exception as e:
-            if isinstance(e, TimeoutError):
-                self.close_connection()
+        except TimeoutError:
+            yield self.close_cached_connections()
             raise
         stdout_parts = _find_stream(receive_elem, shell_cmd[1], 'stdout')
         stderr_parts = _find_stream(receive_elem, shell_cmd[1], 'stderr')
@@ -824,7 +825,7 @@ class EnumerateClient(WinRMClient):
                     LOG.error('{0} {1}'.format(self._hostname, reason.value))
             else:
                 LOG.debug('{0} {1}'.format(self._hostname, e))
-            raise
+            raise e
         returnValue(items)
 
     @inlineCallbacks
@@ -849,11 +850,11 @@ class EnumerateClient(WinRMClient):
                 # Simple RequestError could just be missing wmi class
                 if isinstance(e, UnauthorizedError) or isinstance(e, ForbiddenError):
                     self.close_connection()
-                    raise
-            except Exception:
+                    raise e
+            except Exception as e:
                 # Fail the collection for general errors.
                 self.close_connection()
-                raise
+                raise e
 
         self.close_connection()
         returnValue(items)
