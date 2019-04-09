@@ -94,6 +94,28 @@ def t_print(thing):
     print '{}  {}'.format(time.strftime('%H:%M:%S'), thing)
 
 
+class _StringReader(_StringProtocol):
+
+    def __init__(self, gssclient=None):
+        self.d = Deferred()
+        self._data = []
+        self.gssclient = gssclient
+
+    def dataReceived(self, data):
+        self._data.append(data)
+
+    def connectionLost(self, reason):
+        if self.gssclient:
+            try:
+                body = self.gssclient.decrypt_body(''.join(self._data))
+            except Exception as e:
+                body = 'There was a problem decrypting data received: {}.'\
+                       ' Check WinRM logs on {}'.format(e.message, self.gssclient._conn_info.hostname)
+        else:
+            body = ''.join(self._data)
+        self.d.callback(body)
+
+
 class WinRMSession(Session):
     '''
     Session class to keep track of single winrm connection
@@ -337,13 +359,12 @@ class WinRMSession(Session):
     def send_request(self, request_template_name, client, envelope_size=None, **kwargs):
         response = yield self._send_request(
             request_template_name, client, envelope_size=envelope_size, **kwargs)
-        proto = _StringProtocol()
-        response.deliverBody(proto)
-        body = yield proto.d
         if self.is_kerberos():
-            xml_str = self._gssclient.decrypt_body(body)
+            proto = _StringReader(self._gssclient)
         else:
-            xml_str = yield body
+            proto = _StringReader()
+        response.deliverBody(proto)
+        xml_str = yield proto.d
         if LOG.isEnabledFor(logging.DEBUG):
             try:
                 import xml.dom.minidom
@@ -756,25 +777,41 @@ class LongCommandClient(WinRMClient):
                 # nothing to stop or delete, return None
                 self.close_connection()
                 returnValue(None)
-        yield self._signal_ctrl_c(*shell_cmd)
+        try:
+            self._shells.remove(shell_cmd)
+        except ValueError:
+            pass
+        try:
+            yield self._signal_ctrl_c(*shell_cmd)
+        except Exception as e:
+            if 'internal error' in e.message:
+                # problem stopping command
+                # continue so we can try to delete the shell
+                pass
         response = None
         try:
             exit_code = self._exit_codes.pop(shell_cmd)
         except KeyError:
             exit_code = None
-        if exit_code is None:
+        if exit_code is None and shell_cmd:
             # no exit code, so let's receive data
             try:
-                response = yield self.receive()
-            except TimeoutError:
+                response = yield self.receive(*shell_cmd)
+            except Exception as e:
+                if 'internal error' in e.message\
+                        or isinstance(e, TimeoutError):
+                    pass
+                else:
+                    raise e
+        try:
+            yield self._signal_terminate(*shell_cmd)
+        except Exception as e:
+            if 'internal error' in e.message:
                 pass
-        yield self._signal_terminate(*shell_cmd)
+            else:
+                raise e
         yield self._delete_shell(shell_cmd[0])
         self.close_connection()
-        try:
-            self._shells.remove(shell_cmd)
-        except ValueError:
-            pass
         returnValue(response)
 
 
