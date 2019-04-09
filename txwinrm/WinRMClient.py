@@ -782,7 +782,7 @@ class LongCommandClient(WinRMClient):
         except ValueError:
             pass
         try:
-            yield self._signal_ctrl_c(*shell_cmd)
+            yield self._signal_ctrl_c(shell_cmd)
         except Exception as e:
             if 'internal error' in e.message:
                 # problem stopping command
