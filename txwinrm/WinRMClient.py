@@ -796,7 +796,7 @@ class LongCommandClient(WinRMClient):
         if exit_code is None and shell_cmd:
             # no exit code, so let's receive data
             try:
-                response = yield self.receive(*shell_cmd)
+                response = yield self.receive(shell_cmd)
             except Exception as e:
                 if 'internal error' in e.message\
                         or isinstance(e, TimeoutError):
