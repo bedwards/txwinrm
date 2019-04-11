@@ -171,9 +171,6 @@ class WinRMSession(Session):
         """
         return self._conn_info.auth_type == 'kerberos'
 
-    def decrypt_body(self, body):
-        return self._gssclient.decrypt_body(body)
-
     def _set_headers(self):
         if self._headers:
             return self._headers
@@ -270,8 +267,11 @@ class WinRMSession(Session):
         fire deferred to close existing connections and
         set our variables to None so we don't initiate a new
         connection before close_cached_connections finishes.
+        allow time to pass so that any existing gssclient does
+        not get destroyed before it can be used to decrypt a response.
         """
-        reactor.callWhenRunning(
+        reactor.callLater(
+            60,
             self._reset_all,
             self._gssclient,
             self._agent,
@@ -324,6 +324,7 @@ class WinRMSession(Session):
                         self._headers.setRawHeaders(
                             'Content-Type', _CONTENT_TYPE['Content-Type'])
                     body_producer = _StringProducer(encrypted_request)
+                    response_gssclient = self._gssclient
                     response = yield self._agent.request(
                         'POST', self._url, self._headers, body_producer)
                     new_response = True
@@ -353,14 +354,14 @@ class WinRMSession(Session):
             raise RequestError("{}: HTTP status: {}. {}.".format(
                 client._conn_info.ipaddress, response.code, message))
 
-        returnValue(response)
+        returnValue((response_gssclient, response))
 
     @inlineCallbacks
     def send_request(self, request_template_name, client, envelope_size=None, **kwargs):
-        response = yield self._send_request(
+        response_gssclient, response = yield self._send_request(
             request_template_name, client, envelope_size=envelope_size, **kwargs)
         if self.is_kerberos():
-            proto = _StringReader(self._gssclient)
+            proto = _StringReader(response_gssclient)
         else:
             proto = _StringReader()
         response.deliverBody(proto)
@@ -372,7 +373,10 @@ class WinRMSession(Session):
                 LOG.debug(xml.toprettyxml())
             except Exception:
                 LOG.debug('Could not prettify response XML: "{0}"'.format(xml_str))
-        returnValue(ET.fromstring(xml_str))
+        if 'integrity check' in xml_str:
+            raise Exception(xml_str)
+        ret_str = ET.fromstring(xml_str)
+        returnValue(ret_str)
 
     @inlineCallbacks
     def check_lifetime(self, client):
@@ -448,6 +452,7 @@ class WinRMSession(Session):
             request_template_name,
             **kwargs)
         try:
+            response_gssclient = self._gssclient
             response = yield self._agent.request(
                 'POST', self._url, self._headers, body_producer)
         except Exception as e:
@@ -470,8 +475,8 @@ class WinRMSession(Session):
             self._conn_info.hostname, response.code, request_template_name))
         if response.code != OK:
             # only send errors to handle_response
-            response = yield self.handle_response(request, response, client)
-        returnValue(response)
+            response_gssclient, response = yield self.handle_response(request, response, client)
+        returnValue((response_gssclient, response))
 
 
 class WinRMClient(object):
@@ -520,9 +525,6 @@ class WinRMClient(object):
 
     def is_kerberos(self):
         return self._conn_info.auth_type == 'kerberos'
-
-    def decrypt_body(self, body):
-        return self.session().decrypt_body(body)
 
     @inlineCallbacks
     def send_request(self, request, **kwargs):
@@ -784,7 +786,7 @@ class LongCommandClient(WinRMClient):
         try:
             yield self._signal_ctrl_c(shell_cmd)
         except Exception as e:
-            if 'internal error' in e.message:
+            if 'internal error' in e.message or 'integrity' in e.message:
                 # problem stopping command
                 # continue so we can try to delete the shell
                 pass
@@ -799,6 +801,7 @@ class LongCommandClient(WinRMClient):
                 response = yield self.receive(shell_cmd)
             except Exception as e:
                 if 'internal error' in e.message\
+                        or 'integrity' in e.message\
                         or isinstance(e, TimeoutError):
                     pass
                 else:
@@ -806,11 +809,19 @@ class LongCommandClient(WinRMClient):
         try:
             yield self._signal_terminate(*shell_cmd)
         except Exception as e:
-            if 'internal error' in e.message:
+            if 'internal error' in e.message\
+                    or 'integrity' in e.message:
                 pass
             else:
                 raise e
-        yield self._delete_shell(shell_cmd[0])
+        try:
+            yield self._delete_shell(shell_cmd[0])
+        except Exception as e:
+            if 'internal error' in e.message\
+                    or 'integrity' in e.message:
+                pass
+            else:
+                raise e
         self.close_connection()
         returnValue(response)
 
@@ -827,6 +838,10 @@ class EnumerateClient(WinRMClient):
         self._handler = SaxResponseHandler(self)
         self._hostname = self._conn_info.ipaddress
         self.key = (self._conn_info.ipaddress, 'enumerate')
+        self._gssclient = None
+
+    def decrypt_body(self, body):
+        return self._gssclient.decrypt_body(body)
 
     @inlineCallbacks
     def enumerate(self, wql, resource_uri=DEFAULT_RESOURCE_URI):
@@ -840,7 +855,7 @@ class EnumerateClient(WinRMClient):
             for i in xrange(_MAX_REQUESTS_PER_ENUMERATION):
                 LOG.debug('{0} "{1}" {2}'.format(
                     self._hostname, wql, request_template_name))
-                response = yield self.session()._send_request(
+                self._gssclient, response = yield self.session()._send_request(
                     request_template_name,
                     self,
                     resource_uri=resource_uri,
