@@ -94,7 +94,7 @@ class WinrsUtility(object):
         try:
             client = SingleCommandClient(args.conn_info)
             results = yield client.run_command(args.command)
-            print_output(results.stdout, results.stderr)
+            pprint(results)
         except Exception as e:
             LOG.error(e.message)
         finally:
