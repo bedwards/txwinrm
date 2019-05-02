@@ -17,7 +17,8 @@ from twisted.internet.defer import (
     inlineCallbacks,
     returnValue,
     DeferredSemaphore,
-    Deferred
+    Deferred,
+    succeed
 )
 from twisted.internet.error import TimeoutError
 
@@ -241,14 +242,13 @@ class WinRMSession(Session):
             yield agent._pool.closeCachedConnections()
         returnValue(None)
 
-    @inlineCallbacks
     def _deferred_logout(self):
         # close connections so they don't timeout
         # gssclient will no longer be valid so get rid of it
         # set token to None so the next client will reinitialize
         #   the connection
         self.reset_all()
-        returnValue(None)
+        yield succeed(None)
 
     @inlineCallbacks
     def _reset_all(self, gssclient, agent):
