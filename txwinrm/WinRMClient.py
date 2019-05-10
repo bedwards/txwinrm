@@ -296,18 +296,22 @@ class WinRMSession(Session):
             reader = _ErrorReader()
         response.deliverBody(reader)
         message = yield reader.d
-        if 'maximum number of concurrent operations for this user has '\
-                'been exceeded' in message:
-            message += '  To fix this, increase the MaxConcurrentOperati'\
-                       'onsPerUser WinRM Configuration option to 4294967'\
-                       '295 and restart the winrm service.'
-            raise RequestError("{}: HTTP status: {}. {}.".format(
-                client._conn_info.ipaddress, response.code, message))
+        retry = response.code == UNAUTHORIZED or response.code == BAD_REQUEST
         if response.code == INTERNAL_SERVER_ERROR:
-            raise RequestError("{}: HTTP status: {}. {}.".format(
-                client._conn_info.ipaddress, response.code, message))
+            if 'maximum number of concurrent operations for this user has '\
+                    'been exceeded' in message:
+                message += '  To fix this, increase the MaxConcurrentOperati'\
+                           'onsPerUser WinRM Configuration option to 4294967'\
+                           '295 and restart the winrm service.'
+                raise RequestError("{}: HTTP status: {}. {}.".format(
+                    client._conn_info.ipaddress, response.code, message))
+            elif 'unexpected response' in message.lower():
+                retry = True
+            else:
+                raise RequestError("{}: HTTP status: {}. {}.".format(
+                    client._conn_info.ipaddress, response.code, message))
         new_response = False
-        if response.code == UNAUTHORIZED or response.code == BAD_REQUEST:
+        if retry:
             # check to see if we need to re-authorize due to
             # lost connection or bad request error
             # only retry if using kerberos
@@ -351,6 +355,12 @@ class WinRMSession(Session):
                     reader = _ErrorReader()
                 response.deliverBody(reader)
                 message = yield reader.d
+                if 'unexpected response' in message.lower():
+                    # strip off our encrypted request
+                    try:
+                        message = message[:message.index('(--Encrypted') - 1]
+                    except Exception:
+                        pass
             raise RequestError("{}: HTTP status: {}. {}.".format(
                 client._conn_info.ipaddress, response.code, message))
 
@@ -452,6 +462,8 @@ class WinRMSession(Session):
             request_template_name,
             **kwargs)
         try:
+            if not self._agent:
+                yield self.wait_for_connection(client)
             response_gssclient = self._gssclient
             response = yield self._agent.request(
                 'POST', self._url, self._headers, body_producer)
