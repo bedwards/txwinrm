@@ -427,8 +427,16 @@ def _authenticate_with_kerberos(conn_info, url, agent, gss_client=None):
     response = yield agent.request('POST', url, k_headers, None)
     log.debug('%s received authorization response code %d', conn_info.hostname,
               response.code)
-    auth_header = response.headers.getRawHeaders('WWW-Authenticate')[0]
-    auth_details = get_auth_details(auth_header)
+    err_msg = None
+    try:
+        auth_header = response.headers.getRawHeaders('WWW-Authenticate')[0]
+        auth_details = get_auth_details(auth_header)
+    except Exception:
+        auth_details = None
+        err_msg = 'No WWW-Authenticate header found in authentication '\
+                  'response.  Be sure Windows Management Framework is '\
+                  'up to date.'
+        log.debug(err_msg)
 
     if response.code == httplib.UNAUTHORIZED:
         try:
@@ -453,7 +461,7 @@ def _authenticate_with_kerberos(conn_info, url, agent, gss_client=None):
         xml_str = gss_client.decrypt_body(xml_str)
         raise Exception(
             "status code {0} received on initial winrm connection {1}"
-            .format(response.code, xml_str))
+            .format(response.code, xml_str or err_msg))
     if not auth_details:
         raise Exception(
             'negotiate not found in WWW-Authenticate header: {0}'
