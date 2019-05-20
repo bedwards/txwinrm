@@ -538,12 +538,13 @@ class ConnectionInfo(namedtuple(
         'locale',
         'include_dir',
         'disable_rdns',
-        'connect_timeout'])):
+        'connect_timeout',
+        'max_sessions'])):
     def __new__(cls, hostname, auth_type, username, password, scheme, port,
                 connectiontype, keytab, dcip, timeout=60, trusted_realm='',
                 trusted_kdc='', ipaddress='', service='', envelope_size=512000,
                 code_page=65001, locale='en-US', include_dir=None,
-                disable_rdns=False, connect_timeout=60):
+                disable_rdns=False, connect_timeout=60, max_sessions=1):
         if not ipaddress:
             ipaddress = hostname
         if not service:
@@ -561,7 +562,8 @@ class ConnectionInfo(namedtuple(
                                                   envelope_size, code_page,
                                                   locale, include_dir,
                                                   disable_rdns,
-                                                  int(connect_timeout))
+                                                  int(connect_timeout),
+                                                  max_sessions)
 
 
 def verify_include_dir(conn_info):

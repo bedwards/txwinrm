@@ -506,6 +506,7 @@ class WinRMClient(object):
         self._conn_info = update_conn_info(None, conn_info)
         self.ps_script = None
         self._lifetime_limit = lifetime_limit
+        SESSION_MANAGER.init_pool(conn_info, WinRMSession)
 
     def is_connected(self):
         session = self.session()

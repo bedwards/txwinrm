@@ -141,17 +141,60 @@ class SessionManager(object):
     """Class to manage open sessions to devices."""
 
     def __init__(self):
-        # Used to keep track of sessions.
-        # a session entry uses a key that is a tuple
-        # of (ipaddress, some_other_content)
+        # Used to keep track of sessions to a Windows device.
+        # Keeps a session pool for connections
 
         self._sessions = {}
+        self._active_sessions = {}
+
+    def init_pool(self, conn_info, session):
+        # initialize session pool for a device
+        # if we've already done this, return
+        if conn_info.ipaddress in self._sessions:
+            sessions = self._sessions[conn_info.ipaddress]
+            if conn_info.max_sessions == sessions['max_sessions']:
+                return
+            else:
+                # raise or lower total sessions
+                if conn_info.max_sessions > sessions['max_sessions']:
+                    new_sessions = conn_info.max_sessions -\
+                        len(sessions) + len(self._active_sessions)
+                    for x in xrange(0, new_sessions):
+                        sessions.append(session())
+                else:
+                    remove_sessions = 
+
+        self._sessions[conn_info.ipaddress] = {
+            'sessions': [],
+            'max_sessions': conn_info.max_sessions
+        }
+        self._active_sessions = []
+        for x in xrange(0, conn_info.max_sessions):
+            self._sessions[conn_info.ipaddress]['sessions'].append(session())
 
     def get_connection(self, key):
         """Return the session for a given key."""
         if key is None:
             raise Exception('WinRM SessionManager: Client key cannot be empty')
         return self._sessions.get(key, None)
+
+    def get_session(self, host=None):
+        """Return a session for a given host(ipaddress/hostname)."""
+        if host is None:
+            raise Exception('WinRM SessionManager: host id required '
+                            'to obtain a session')
+
+        if self._sessions.get(host, None) is None:
+            # no available sessions
+            raise Exception('No available sessions for {}'.format(host))
+        session = self._sessions.get(host, []).pop()
+        if session:
+            self._active_sessions[host].append(session)
+            return session
+
+    def return_session(self, host, session):
+        self._active_sessions[host].remove(session)
+        self._sessions.append(session)
 
     def remove_connection(self, key):
         """End a session by a key.
