@@ -118,9 +118,12 @@ class WinrsUtility(object):
                         LOG.debug('OperationTimeout trying to receive.'
                                   ' Attempting to receive again.')
                         continue
-                print_output(response.stdout, response.stderr)
-                if response.exit_code is not None:
-                    break
+                    else:
+                        LOG.error(e.message)
+                else:
+                    print_output(response.stdout, response.stderr)
+                    if response.exit_code is not None:
+                        break
             response = yield client.stop(shell_cmd)
             if response:
                 print_output(response.stdout, response.stderr)
