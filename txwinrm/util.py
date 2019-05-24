@@ -36,7 +36,6 @@ log = logging.getLogger('winrm')
 _XML_WHITESPACE_PATTERN = re.compile(r'>\s+<')
 _AGENT = None
 _MAX_PERSISTENT_PER_HOST = 200
-_CACHED_CONNECTION_TIMEOUT = 24000
 _CONNECT_TIMEOUT = 500
 _NANOSECONDS_PATTERN = re.compile(r'\.(\d{6})(\d{3})')
 _REQUEST_TEMPLATE_NAMES = (
@@ -62,8 +61,7 @@ Content-Type: application/octet-stream
 {emsg}--Encrypted Boundary
 """
 
-_KRB_INTERNAL_CACHE_ERR = 'Internal credentials cache error while storing '\
-    'credentials while getting initial credentials'
+_KRB_INTERNAL_CACHE_ERR = 'Internal credentials cache error'
 
 
 def _has_get_attr(obj, attr_name):
@@ -82,19 +80,21 @@ class MyWebClientContextFactory(object):
         return self._options.getContext()
 
 
-def _get_agent():
+def _get_agent(connect_timeout=_CONNECT_TIMEOUT):
     context_factory = MyWebClientContextFactory()
     try:
         # HTTPConnectionPool has been present since Twisted version 12.1
         from twisted.web.client import HTTPConnectionPool
         pool = HTTPConnectionPool(reactor, persistent=True)
         pool.maxPersistentPerHost = _MAX_PERSISTENT_PER_HOST
-        pool.cachedConnectionTimeout = _CACHED_CONNECTION_TIMEOUT
         agent = Agent(reactor, context_factory,
-                      connectTimeout=_CONNECT_TIMEOUT, pool=pool)
+                      connectTimeout=connect_timeout, pool=pool)
     except ImportError:
         from _zenclient import ZenAgent
-        agent = ZenAgent(reactor, context_factory, persistent=True, maxConnectionsPerHostName=1)
+        agent = ZenAgent(reactor,
+                         context_factory,
+                         persistent=True,
+                         maxConnectionsPerHostName=1)
     return agent
 
 
@@ -309,6 +309,8 @@ class AuthGSSClient(object):
                             extra = ' Make sure all KDCs are valid: {}'.format(
                                 ','.join(config.realms[self._realm]))
                         raise Exception(kinit_result + extra)
+                    else:
+                        continue
 
         if result_code != kerberos.AUTH_GSS_CONTINUE:
             raise Exception('failed to obtain service principal ticket ({0}).'
