@@ -511,6 +511,10 @@ Run txwinrm/test/precommit before merging to master. This requires that you...
 Changes
 -------
 
+1.4.0
+* simplify connections to windows devices
+* allow for multiple users across domains by using credential cache collections
+
 1.2.2
 * Add support for multiple kdcs to be defined
 
