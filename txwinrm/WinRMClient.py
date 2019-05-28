@@ -10,7 +10,13 @@
 import logging
 import time
 from collections import namedtuple
-from httplib import BAD_REQUEST, UNAUTHORIZED, FORBIDDEN, OK, INTERNAL_SERVER_ERROR
+from httplib import (
+    BAD_REQUEST,
+    UNAUTHORIZED,
+    FORBIDDEN,
+    OK,
+    INTERNAL_SERVER_ERROR
+)
 
 from twisted.internet import reactor
 from twisted.internet.defer import (
@@ -18,7 +24,6 @@ from twisted.internet.defer import (
     returnValue,
     DeferredSemaphore,
     Deferred,
-    succeed
 )
 from twisted.internet.error import TimeoutError
 
@@ -76,16 +81,26 @@ class ShellException(Exception):
     pass
 
 
+class ResponseError(Exception):
+    pass
+
+
+class RetryRequest(Exception):
+    pass
+
+
 def create_shell_from_elem(elem):
     accumulator = ItemsAccumulator()
     accumulator.new_item()
-    for item in ['ShellId', 'Owner', 'ClientIP', 'ShellRunTime', 'ShellInactivity', 'IdleTimeOut']:
+    for item in ['ShellId', 'Owner', 'ClientIP', 'ShellRunTime',
+                 'ShellInactivity', 'IdleTimeOut']:
         xpath = './/{{{}}}{}'.format(c.XML_NS_MSRSP, item)
         try:
             accumulator.add_property(item, elem.findtext(xpath).strip())
         except AttributeError as e:
             if item == 'ShellId':
-                raise Exception('Invalid response from create shell request: {}'.format(e))
+                raise Exception('Invalid response from create shell request:'
+                                ' {}'.format(e))
             # as long as we have a valid ShellId we should be fine
             accumulator.add_property(item, '')
     return accumulator.items[0]
@@ -111,127 +126,64 @@ class _StringReader(_StringProtocol):
                 body = self.gssclient.decrypt_body(''.join(self._data))
             except Exception as e:
                 body = 'There was a problem decrypting data received: {}.'\
-                       ' Check WinRM logs on {}'.format(e.message, self.gssclient._conn_info.hostname)
+                       ' Check WinRM logs on {}'.format(
+                            e.message, self.gssclient._conn_info.hostname)
         else:
             body = ''.join(self._data)
         self.d.callback(body)
 
 
-class WinRMSession(Session):
-    '''
-    Session class to keep track of single winrm connection
-    '''
-    def __init__(self):
-        super(WinRMSession, self).__init__()
+class WinRMConnection(object):
+    """Class to hold connection objects for WinRM communications."""
 
+    def __init__(self, conn_info):
+        """Initialize a WinRMConnection."""
         # twisted agent to send http/https requests
-        self._agent = None
-
-        # our kerberos context for encryption/decryption
-        self._gssclient = None
-
-        # url for session
-        self._url = None
-
-        # headers to use for requests
-        self._headers = None
+        self._agent = _get_agent(conn_info.connect_timeout)
 
         # connection info.  see util.ConnectionInfo
-        self._conn_info = None
+        self._conn_info = conn_info
 
-        # DeferredSemaphore so that we complete one transaction/conversation
-        # at a time.  Windows cannot handle mixed transaction types on one
-        # connection.
-        self.sem = DeferredSemaphore(1)
+        # url for connection
+        self._url = "{c.scheme}://{c.ipaddress}:{c.port}/wsman".format(
+            c=self._conn_info)
 
-        # unused.  reserved for possible future use
-        self._refresh_dc = None
-
-        self.set_lifetime_limit(5)
-
-    def set_lifetime_limit(self, lifetime_limit):
-        # amount of time to compare against context lifetime
-        # if kerberos context lifetime is <=, then let it expire and reset
-        self._lifetime_limit = lifetime_limit
-
-    def semrun(self, fn, *args, **kwargs):
-        """Run fn(*args, **kwargs) under a DeferredSemaphore with a timeout."""
-        return self.sem.run(
-            with_timeout,
-            fn=fn,
-            args=args,
-            kwargs=kwargs,
-            seconds=self._conn_info.timeout)
-
-    def is_kerberos(self):
-        """Check for kerberos connection.
-
-        use a lazy import. any kerberos reference in this module
-        will call this method first so there will be no AttributeErrors
-        for referencing the kerberos module without it being imported
-        """
-        return self._conn_info.auth_type == 'kerberos'
-
-    def _set_headers(self):
-        if self._headers:
-            return self._headers
-        if self._conn_info.auth_type == 'basic':
-            self._headers = Headers(_CONTENT_TYPE)
-            self._headers.addRawHeader('Connection', self._conn_info.connectiontype)
-            self._headers.addRawHeader(
-                'Authorization', _get_basic_auth_header(self._conn_info))
-        elif self.is_kerberos():
-            self._headers = Headers(_ENCRYPTED_CONTENT_TYPE)
-            self._headers.addRawHeader('Connection', self._conn_info.connectiontype)
-        return self._headers
-
-    def update_conn_info(self, client):
-        self._conn_info = update_conn_info(self._conn_info, client._conn_info)
+        # our kerberos context for encryption/decryption
+        # if using domain authentication
+        self._gssclient = None
 
     @inlineCallbacks
     def run_authenticate(self):
-        # run through single semaphore so that we can allow
-        # for multiple users. gss uses KRB5CCNAME to determine
-        # cache to use, so we must make sure that the env variable
-        # is not overwritten.
-        self._token = self._gssclient = yield KRB5_SEM.run(
-            with_timeout,
+        """Initialize kerberos connection."""
+        self._gssclient = yield with_timeout(
             fn=_authenticate_with_kerberos,
             args=(self._conn_info,
                   self._url,
                   self._agent),
             kwargs={},
-            seconds=self._conn_info.timeout)
+            seconds=self._conn_info.connect_timeout)
 
     @inlineCallbacks
-    def _deferred_login(self, client=None):
-        if self._agent is None:
-            self._agent = _get_agent()
-        if self._gssclient:
-            returnValue(self._gssclient)
-        if client:
-            self.update_conn_info(client)
-        self._url = "{c.scheme}://{c.ipaddress}:{c.port}/wsman".format(
-            c=self._conn_info)
-        if self.is_kerberos():
-            try:
+    def init_connection(self):
+        """Initialize kerberos connection."""
+        LOG.debug('authenticate with kerberos')
+        try:
+            yield self.run_authenticate()
+        except Exception as e:
+            if isinstance(e, kerberos.GSSError) and 'The referenced '\
+                    'context has expired' in e.args[0][0]:
+                LOG.debug('found The referenced context has expired,'
+                          ' starting over')
                 yield self.run_authenticate()
-            except Exception as e:
-                if isinstance(e, kerberos.GSSError) and 'The referenced '\
-                        'context has expired' in e.args[0][0]:
-                    LOG.debug('found The referenced context has expired,'
-                              ' starting over')
-                    yield self.run_authenticate()
-                else:
-                    raise e
-            returnValue(self._gssclient)
-        else:
-            returnValue('basic_auth_token')
+            else:
+                raise e
 
     @inlineCallbacks
     def close_cached_connections(self, agent=None):
-        # close connections so we do not end up with orphans
-        # return a Deferred()
+        """Close connections so we do not end up with orphans.
+
+        nothing to return
+        """
         if not agent:
             agent = self._agent
         if agent and hasattr(agent, 'closeCachedConnections'):
@@ -242,136 +194,22 @@ class WinRMSession(Session):
             yield agent._pool.closeCachedConnections()
         returnValue(None)
 
-    def _deferred_logout(self):
-        # close connections so they don't timeout
-        # gssclient will no longer be valid so get rid of it
-        # set token to None so the next client will reinitialize
-        #   the connection
-        self.reset_all()
-        yield succeed(None)
-
     @inlineCallbacks
-    def _reset_all(self, gssclient, agent):
-        if gssclient is not None:
-            gssclient.cleanup()
-            gssclient = None
-        yield self.close_cached_connections(agent)
-        if agent:
-            agent._pool = None
-        agent = None
+    def close_connection(self):
+        if self._gssclient is not None:
+            self._gssclient.cleanup()
+            self._gssclient = None
+        yield self.close_cached_connections(self._agent)
+        if self._agent and hasattr(self._agent, 'pool'):
+            self._agent._pool = None
+        self._agent = None
         returnValue(None)
 
-    def reset_all(self):
-        """Reset instance variables.
-
-        fire deferred to close existing connections and
-        set our variables to None so we don't initiate a new
-        connection before close_cached_connections finishes.
-        allow time to pass so that any existing gssclient does
-        not get destroyed before it can be used to decrypt a response.
-        """
-        reactor.callLater(
-            60,
-            self._reset_all,
-            self._gssclient,
-            self._agent,
-        )
-        self._token = None
-        self._login_d = None
-        self._gssclient = None
-        self._agent = None
-        self._headers = None
-        self._url = None
-
     @inlineCallbacks
-    def handle_response(self, request, response, client):
-        # first get the error message out of the response so we
-        # don't encounter Decrypt Integrity Check errors
-        if response.code == FORBIDDEN:
-            raise ForbiddenError(
-                "Forbidden: Check WinRM port and version")
-        if self.is_kerberos():
-            reader = _ErrorReader(self._gssclient)
-        else:
-            reader = _ErrorReader()
-        response.deliverBody(reader)
-        message = yield reader.d
-        retry = response.code == UNAUTHORIZED or response.code == BAD_REQUEST
-        if response.code == INTERNAL_SERVER_ERROR:
-            if 'maximum number of concurrent operations for this user has '\
-                    'been exceeded' in message:
-                message += '  To fix this, increase the MaxConcurrentOperati'\
-                           'onsPerUser WinRM Configuration option to 4294967'\
-                           '295 and restart the winrm service.'
-                raise RequestError("{}: HTTP status: {}. {}.".format(
-                    client._conn_info.ipaddress, response.code, message))
-            elif 'unexpected response' in message.lower():
-                retry = True
-            else:
-                raise RequestError("{}: HTTP status: {}. {}.".format(
-                    client._conn_info.ipaddress, response.code, message))
-        new_response = False
-        if retry:
-            # check to see if we need to re-authorize due to
-            # lost connection or bad request error
-            # only retry if using kerberos
-            self.reset_all()
-            if client.is_kerberos():
-                yield self.wait_for_connection(client)
-                yield self.check_lifetime(client)
-                try:
-                    self._set_headers()
-                    encrypted_request = self._gssclient.encrypt_body(
-                        request)
-                    if not encrypted_request.startswith(
-                            "--Encrypted Boundary"):
-                        self._headers.setRawHeaders(
-                            'Content-Type', _CONTENT_TYPE['Content-Type'])
-                    body_producer = _StringProducer(encrypted_request)
-                    response_gssclient = self._gssclient
-                    response = yield self._agent.request(
-                        'POST', self._url, self._headers, body_producer)
-                    new_response = True
-                except Exception as e:
-                    raise e
-        if response.code == UNAUTHORIZED:
-            if client.is_kerberos():
-                raise UnauthorizedError(
-                    "Unauthorized to use winrm on {}. User must be "
-                    "Administrator or given permissions to use the "
-                    " winrm service".format(
-                        client._conn_info.hostname))
-            else:
-                raise UnauthorizedError(
-                    "Unauthorized to use winrm on {}. Check username"
-                    " and password".format(
-                        client._conn_info.hostname))
-        elif response.code != OK:
-            # raise error on anything other than ok
-            if new_response:
-                if self.is_kerberos():
-                    reader = _ErrorReader(self._gssclient)
-                else:
-                    reader = _ErrorReader()
-                response.deliverBody(reader)
-                message = yield reader.d
-                if 'unexpected response' in message.lower():
-                    # strip off our encrypted request
-                    try:
-                        message = message[:message.index('(--Encrypted') - 1]
-                    except Exception:
-                        pass
-            raise RequestError("{}: HTTP status: {}. {}.".format(
-                client._conn_info.ipaddress, response.code, message))
-
-        returnValue((response_gssclient, response))
-
-    @inlineCallbacks
-    def send_request(self, request_template_name, client, envelope_size=None, **kwargs):
-        response_gssclient, response = yield self._send_request(
-            request_template_name, client, envelope_size=envelope_size, **kwargs)
-        if self.is_kerberos():
-            proto = _StringReader(response_gssclient)
+    def send_request(self, request):
+        response = yield self._send_request(request)
+        if self._gssclient:
+            proto = _StringReader(self._gssclient)
         else:
             proto = _StringReader()
         response.deliverBody(proto)
@@ -382,121 +220,139 @@ class WinRMSession(Session):
                 xml = xml.dom.minidom.parseString(xml_str)
                 LOG.debug(xml.toprettyxml())
             except Exception:
-                LOG.debug('Could not prettify response XML: "{0}"'.format(xml_str))
+                LOG.debug('Could not prettify response XML: "{0}"'.format(
+                    xml_str))
         if 'integrity check' in xml_str:
             raise Exception(xml_str)
         ret_str = ET.fromstring(xml_str)
         returnValue(ret_str)
 
     @inlineCallbacks
-    def check_lifetime(self, client):
-        """Check to see if our ticket is going to expire soon."""
-        if not self._gssclient:
-            yield self.wait_for_connection(client)
-        lifetime = self._gssclient.context_lifetime()
-        if lifetime <= self._lifetime_limit:
-            # go ahead and kill the connection
-            # defer until it does expire and reinit
-            d = Deferred()
-            self.reset_all()
-            try:
-                yield add_timeout(d, lifetime + 1)
-            except Exception:
-                pass
-            yield client.init_connection()
-        returnValue(None)
-
-    @inlineCallbacks
-    def wait_for_connection(self, client):
-        """Wait until connection established."""
-        if self._login_d and not self._login_d.called:
-            # check for a reconnection attempt so we do not send any requests
-            # to a dead connection or try to check the context lifetime on an
-            # unestablished connection
-            self._token = yield self._login_d
-        if self._token is None or\
-                (self.is_kerberos() and self._gssclient is None):
-            # no token or gssclient, if kerberos, so initiate connection
-            yield client.init_connection()
-        returnValue(None)
-
-    @inlineCallbacks
-    def prep_request(self, client, request_template_name, **kwargs):
-        """Prepare request and body_producer."""
-        request = _get_request_template(request_template_name).format(
-            **kwargs)
-        self._headers = self._set_headers()
-        if self.is_kerberos():
-            if not self._gssclient:
-                yield self.wait_for_connection(client)
-            encrypted_request = self._gssclient.encrypt_body(request)
-            if not encrypted_request.startswith("--Encrypted Boundary"):
-                self._headers.setRawHeaders(
-                    'Content-Type',
-                    _CONTENT_TYPE['Content-Type'])
-            body_producer = _StringProducer(encrypted_request)
-        else:
-            body_producer = _StringProducer(request)
-        returnValue((request, body_producer))
-
-    @inlineCallbacks
-    def _send_request(self, request_template_name, client, envelope_size=None,
-                      locale=None, code_page=None, **kwargs):
-        try:
-            # cancel logout attempt
-            self._logout_dc.cancel()
-            self._logout_dc = None
-        except Exception:
-            pass
-        yield self.wait_for_connection(client)
-        if client.is_kerberos():
-            yield self.check_lifetime(client)
-        kwargs['envelope_size'] = envelope_size or\
-            self._conn_info.envelope_size
-        kwargs['locale'] = locale or self._conn_info.locale
-        kwargs['code_page'] = code_page or self._conn_info.code_page
+    def _send_request(self, request):
         LOG.debug('{} sending request: {} {}'.format(
-            self._conn_info.hostname, request_template_name, kwargs))
-        request, body_producer = yield self.prep_request(
-            client,
-            request_template_name,
-            **kwargs)
+            self._conn_info.hostname,
+            request.request_template_name,
+            request.kwargs))
+        request.prep_request(self._gssclient)
         try:
-            if not self._agent:
-                yield self.wait_for_connection(client)
-            response_gssclient = self._gssclient
             response = yield self._agent.request(
-                'POST', self._url, self._headers, body_producer)
+                'POST',
+                self._url,
+                request.headers,
+                request.body_producer)
         except Exception as e:
-            if isinstance(e, kerberos.GSSError) and 'The referenced '\
-                    'context has expired' in e.args[0][0]:
-                # tried to use expired context, retry
-                LOG.debug('found The referenced context has expired,'
-                          ' resetting connection and resending request')
-                self.reset_all()
-                response = yield self._send_request(
-                    request_template_name,
-                    client,
-                    envelope_size=envelope_size,
-                    **kwargs)
-            else:
-                LOG.debug('{} exception sending request: {}'.format(
-                    self._conn_info.hostname, e))
-                raise e
+            LOG.debug('{} exception sending request: {}'.format(
+                self._conn_info.hostname, e))
+            raise e
         LOG.debug('{} received response {} {}'.format(
-            self._conn_info.hostname, response.code, request_template_name))
+            self._conn_info.hostname,
+            response.code,
+            request.request_template_name))
         if response.code != OK:
-            # only send errors to handle_response
-            response_gssclient, response = yield self.handle_response(request, response, client)
-        returnValue((response_gssclient, response))
+            # only send errors to _handle_response
+            yield self._handle_response(response, request)
+        returnValue(response)
+
+    @inlineCallbacks
+    def _handle_response(self, response, request):
+        """Handle errors from winrm.
+
+        in some cases we may want to retry the request.
+        """
+        if response.code == FORBIDDEN:
+            raise ForbiddenError(
+                "Forbidden: Check WinRM port and version")
+        if self._gssclient:
+            reader = _ErrorReader(self._gssclient)
+        else:
+            reader = _ErrorReader()
+        response.deliverBody(reader)
+        message = yield reader.d
+        retry = any([response.code == UNAUTHORIZED,
+                     response.code == BAD_REQUEST,
+                     'unexpected response' in message.lower()])
+        if all([retry, not request.retry, self._gssclient]):
+            raise RetryRequest()
+        if response.code == UNAUTHORIZED:
+            if self._gssclient:
+                raise UnauthorizedError(
+                    "Unauthorized to use winrm on {}. User must be "
+                    "Administrator or given permissions to use the "
+                    " winrm service".format(
+                        self._conn_info.hostname))
+            else:
+                raise UnauthorizedError(
+                    "Unauthorized to use winrm on {}. Check username"
+                    " and password".format(
+                        self._conn_info.hostname))
+        if response.code == INTERNAL_SERVER_ERROR:
+            if 'maximum number of concurrent operations for this user has '\
+                    'been exceeded' in message:
+                message += '  To fix this, increase the MaxConcurrentOperati'\
+                           'onsPerUser WinRM Configuration option to 4294967'\
+                           '295 and restart the winrm service.'
+                raise RequestError("{}: HTTP status: {}. {}.".format(
+                    self._conn_info.ipaddress, response.code, message))
+        raise RequestError("{}: HTTP status: {}. {}.".format(
+            self._conn_info.ipaddress, response.code, message))
+
+
+class Request(object):
+    """Class used for WinRM requests."""
+
+    def __init__(self, client, request_template_name, **kwargs):
+        """Initialize Request."""
+        self.client = client
+        self._conn_info = client._conn_info
+        self.request_template_name = request_template_name
+        self.kwargs = kwargs
+        kwargs['envelope_size'] = client._conn_info.envelope_size
+        kwargs['locale'] = client._conn_info.locale
+        kwargs['code_page'] = client._conn_info.code_page
+        self.request = _get_request_template(request_template_name).format(
+            **kwargs)
+        self.headers = None
+        self.is_kerberos = self._conn_info.auth_type == 'kerberos'
+        self.retry = False
+        self.body_producer = None
+
+    def _set_headers(self):
+        if self.headers:
+            return self.headers
+        if self._conn_info.auth_type == 'basic':
+            self.headers = Headers(_CONTENT_TYPE)
+            self.headers.addRawHeader('Connection',
+                                      self._conn_info.connectiontype)
+            self.headers.addRawHeader(
+                'Authorization', _get_basic_auth_header(self._conn_info))
+        elif self.is_kerberos:
+            self.headers = Headers(_ENCRYPTED_CONTENT_TYPE)
+            self.headers.addRawHeader('Connection',
+                                      self._conn_info.connectiontype)
+        return self.headers
+
+    def prep_request(self, gssclient):
+        """Prepare request and body_producer."""
+        self._set_headers()
+        if not self.is_kerberos:
+            self.body_producer = _StringProducer(self.request)
+            return
+        encrypted_request = gssclient.encrypt_body(self.request)
+        if not encrypted_request.startswith("--Encrypted Boundary"):
+            self._headers.setRawHeaders(
+                'Content-Type',
+                _CONTENT_TYPE['Content-Type'])
+        self.body_producer = _StringProducer(encrypted_request)
 
 
 class WinRMClient(object):
-    """Base winrm client class
+    """Base winrm client class.
 
     Contains core functionality for various types of winrm based clients
     """
+
     def __init__(self, conn_info, lifetime_limit=5):
+        """Base WinRMClient for working with windows."""
         global kerberos
         if not kerberos:
             import kerberos
@@ -507,47 +363,131 @@ class WinRMClient(object):
         self.ps_script = None
         self._lifetime_limit = lifetime_limit
 
-    def is_connected(self):
-        session = self.session()
-        if session and session._agent and session._token:
-            if session.is_kerberos():
-                if session._gssclient:
-                    return True
-                else:
-                    return False
-            return True
-        else:
-            return False
+        # WinRMConnection for the client.
+        self._connection = None
 
-    def session(self):
-        return SESSION_MANAGER.get_connection(self.key)
+        # set to True if the subclassed client will handle the response
+        self._get_raw = False
 
-    @inlineCallbacks
-    def init_connection(self):
-        """Initialize a connection through the session_manager"""
-        try:
-            yield add_timeout(SESSION_MANAGER.init_connection(self, WinRMSession),
-                              seconds=self._conn_info.connect_timeout,
-                              exception_class=TimeoutError)
-        except Exception:
-            self.close_connection(immediately=True)
-            raise
-        self.session().set_lifetime_limit(self._lifetime_limit)
-        returnValue(None)
+        self._request_d = None
 
     def is_kerberos(self):
+        """Test if this is a kerberos connection."""
         return self._conn_info.auth_type == 'kerberos'
 
     @inlineCallbacks
-    def send_request(self, request, **kwargs):
-        session = self.session()
-        if session is None or session._token is None\
-                or (session.is_kerberos() and session._gssclient is None):
-            yield self.init_connection()
+    def init_connection(self):
+        """Initialize a WinRMConnection.
 
-        if not self.session():
-            raise Exception('Could not connect to device {}'.format(self._conn_info.hostname))
-        response = yield self.session().send_request(request, self, **kwargs)
+        Obtain a kerberos ticket and connect to server if kerberos
+        """
+        connection = WinRMConnection(self._conn_info)
+        if self.is_kerberos() and connection._gssclient is None:
+            yield connection.init_connection()
+        returnValue(connection)
+
+    def close_connection(self, connection):
+        """Close a connection and reset."""
+        if not connection:
+            connection = self._connection
+        self._connection = None
+        if not connection:
+            return
+        reactor.callWhenRunning(connection.close_connection)
+
+    @inlineCallbacks
+    def check_lifetime(self, connection):
+        """Check to see if our ticket is going to expire soon."""
+        lifetime = connection._gssclient.context_lifetime()
+        if lifetime <= self._lifetime_limit:
+            # go ahead and kill the connection
+            # defer until it does expire and reinit
+            def expire_ticket(seconds):
+                self.close_connection(connection)
+                d = Deferred()
+                reactor.callLater(seconds, d.callback, None)
+                return d
+            try:
+                yield expire_ticket(lifetime)
+            except Exception:
+                pass
+            connection = yield self.init_connection()
+        returnValue(connection)
+
+    @inlineCallbacks
+    def connection(self):
+        """Return client's WinRMConnection.
+
+        If no current connection, create one.
+        If kerberos, then check the ticket lifetime so that we don't
+        use an expiring ticket.
+        """
+        connection = yield self.init_connection()
+        if self.is_kerberos():
+            connection = yield self.check_lifetime(connection)
+        returnValue(connection)
+
+    @inlineCallbacks
+    def send_request(self, request, **kwargs):
+        """Send a request through a WinRMConnection.
+
+        wait for any previous request to finish
+        """
+        if self._request_d and not self._request_d.called:
+            # wait for previous request to finish
+            yield self._request_d
+        self._request_d = self._send_request(self._connection,
+                                             request,
+                                             **kwargs)
+        response = yield self._request_d
+        self._request_d = None
+        returnValue(response)
+
+    @inlineCallbacks
+    def _send_request(self, connection, request, **kwargs):
+        """Send a request through a WinRMConnection."""
+        # if we do not have a current connection, create a new one
+        if not connection:
+            connection = yield self.connection()
+
+        req = Request(self, request, **kwargs)
+        if self._get_raw:
+            # just get the raw response and allow client to decrypt and parse
+            response_d = connection._send_request(req)
+        else:
+            response_d = connection.send_request(req)
+        try:
+            response = yield add_timeout(response_d,
+                                         self._conn_info.timeout + 1)
+        except Exception as e:
+            retry = isinstance(e, kerberos.GSSError) and\
+                'The referenced context has expired' in e.args[0][0]
+            if any([isinstance(e, RetryRequest),
+                    retry]):
+                LOG.debug('{} retring request {}'.format(
+                    self._conn_info.hostname, req.request_template_name))
+                self.close_connection(connection)
+                connection = yield self.connection()
+                req.retry = True
+                if self._get_raw:
+                    response_d = connection._send_request(req)
+                else:
+                    response_d = connection.send_request(req)
+                try:
+                    response = yield add_timeout(response_d,
+                                                 self._conn_info.timeout + 1)
+                    returnValue(response)
+                except Exception as e:
+                    self.close_connection(connection)
+                    raise e
+            elif isinstance(e, TimeoutError):
+                # either we timed out sending or receiving response
+                self.close_connection(connection)
+                LOG.debug('{} request {} timed out.'.format(
+                    self._conn_info.hostname, req.request_template_name))
+            raise e
+        # save current connection
+        self._connection = connection
         returnValue(response)
 
     @inlineCallbacks
@@ -598,81 +538,45 @@ class WinRMClient(object):
             timeout=self._conn_info.timeout)
         returnValue(receive_elem)
 
-    def close_connection(self, immediately=False):
-        SESSION_MANAGER.close_connection(self, immediately)
-
-    @inlineCallbacks
-    def close_cached_connections(self):
-        yield self.session().close_cached_connections()
-
 
 class SingleCommandClient(WinRMClient):
-    """Client to send a single command to a winrm device"""
+    """Client to send a single command to a winrm device."""
+
     def __init__(self, conn_info):
         super(SingleCommandClient, self).__init__(conn_info)
 
     @inlineCallbacks
     def run_command(self, command_line, ps_script=None):
-        """Run a single command in the session's semaphore.  Windows must finish
-        a command conversation before a new command or enumeration can start
+        r"""Run a single command.
 
         If running a powershell script, send it in separately with ps_script in
         "& {<actual script here>}" format
-        e.g. command_line='powershell -NoLogo -NonInteractive -NoProfile -Command',
-        ps_script='"& {get-counter -counter \\\"\memory\pages output/sec\\\" }"'
+        e.g. command_line='powershell -NoLogo -NonInteractive -NoProfile
+        -Command', ps_script='"& {get-counter -counter \\\"\memory\pages
+        output/sec\\\" }"'
         """
-        cmd_response = None
         self.ps_script = ps_script
-        if ps_script:
-            self.key = (self._conn_info.ipaddress, 'short', self.ps_script)
-        else:
-            self.key = (self._conn_info.ipaddress, 'short', command_line)
-        yield self.init_connection()
-        cmd_response = yield self.run_single_command(command_line)
-        returnValue(cmd_response)
-
-    @inlineCallbacks
-    def run_single_command(self, command_line):
-        """Run a single command.
-
-        run a remote shell like the winrs application
-        on Windows. Returns a dictionary with the following
-        structure:
-            CommandResponse
-                .stdout = [<non-empty, stripped line>, ...]
-                .stderr = [<non-empty, stripped line>, ...]
-                .exit_code = <int>
-        """
         try:
-            shell_id = yield add_timeout(self._create_shell(),
-                                         self._conn_info.timeout)
+            shell_id = yield self._create_shell()
         except Exception as e:
-            if isinstance(e, TimeoutError):
-                yield self.close_cached_connections()
-            self.close_connection()
             raise e
         cmd_response = None
         cmd_response = yield self._run_command(shell_id, command_line)
-        self.close_connection()
+        self.close_connection(self._connection)
         returnValue(cmd_response)
 
     @inlineCallbacks
     def _run_command(self, shell_id, command_line):
         try:
-            cmd_d = self._send_command(shell_id, command_line)
-            command_elem = yield add_timeout(cmd_d, self._conn_info.timeout)
+            command_elem = yield self._send_command(shell_id, command_line)
         except Exception as e:
-            if isinstance(e, TimeoutError):
-                yield self.close_cached_connections()
-            self.close_connection()
             raise e
         command_id = _find_command_id(command_elem)
         stdout_parts = []
         stderr_parts = []
         for i in xrange(_MAX_REQUESTS_PER_COMMAND):
             try:
-                receive_d = self._send_receive(shell_id, command_id)
-                receive_elem = yield add_timeout(receive_d, self._conn_info.timeout)
+                receive_elem = yield self._send_receive(shell_id, command_id)
             except Exception as e:
                 if isinstance(e, kerberos.GSSError) and 'The referenced '\
                         'context has expired' in e.args[0][0]:
@@ -692,24 +596,19 @@ class SingleCommandClient(WinRMClient):
         try:
             yield self._signal_terminate(shell_id, command_id)
         except Exception as e:
-            if isinstance(e, TimeoutError):
-                yield self.close_cached_connections()
-            self.close_connection()
             raise e
         stdout = _stripped_lines(stdout_parts)
         stderr = _stripped_lines(stderr_parts)
         try:
             yield self._delete_shell(shell_id)
         except Exception as e:
-            if isinstance(e, TimeoutError):
-                yield self.close_cached_connections()
-            self.close_connection()
             raise e
         returnValue(CommandResponse(stdout, stderr, exit_code))
 
 
 class LongCommandClient(WinRMClient):
-    """Client to run a long running command on a winrm device"""
+    """Client to run a long running command on a winrm device."""
+
     def __init__(self, conn_info):
         super(LongCommandClient, self).__init__(conn_info)
         self._shells = []
@@ -717,34 +616,31 @@ class LongCommandClient(WinRMClient):
 
     @inlineCallbacks
     def start(self, command_line, ps_script=None):
-        """Start long running command.
+        r"""Start long running command.
 
         If running a powershell script, send it in separately with ps_script in
         "& {<actual script here>}" format
-        e.g. command_line='powershell -NoLogo -NonInteractive -NoProfile -Command',
-        ps_script='"& {get-counter -counter \\\"\memory\pages output/sec\\\" }"'
+        e.g. command_line='powershell -NoLogo -NonInteractive -NoProfile
+        -Command', ps_script='"& {get-counter -counter \\\"\memory\pages
+        output/sec\\\" }"'
 
         Return a shell id, command id tuple on success
-
         """
         LOG.debug("{} LongRunningCommand run_command: {}".format(
             self._conn_info.hostname, command_line))
         self.key = (self._conn_info.ipaddress, command_line + str(ps_script))
         self.ps_script = ps_script
-        if not self.is_connected():
-            yield self.init_connection()
         try:
             shell_id = yield self._create_shell()
-        except TimeoutError:
-            self.close_cached_connections()
+        except Exception:
             raise
         try:
             command_elem = yield self._send_command(
                 shell_id,
                 command_line)
-        except TimeoutError:
+        except Exception:
+            # try to delete the shell
             yield self._delete_shell(shell_id)
-            self.close_cached_connections()
             raise
         command_id = _find_command_id(command_elem)
         shell_cmd = (shell_id, command_id)
@@ -764,11 +660,7 @@ class LongCommandClient(WinRMClient):
             except IndexError:
                 raise ShellException('No shell and command id from which to '
                                      'receive output.')
-        try:
-            receive_elem = yield self._send_receive(*shell_cmd)
-        except TimeoutError:
-            yield self.close_cached_connections()
-            raise
+        receive_elem = yield self._send_receive(*shell_cmd)
         stdout_parts = _find_stream(receive_elem, shell_cmd[1], 'stdout')
         stderr_parts = _find_stream(receive_elem, shell_cmd[1], 'stderr')
         exit_code = _find_exit_code(receive_elem, shell_cmd[1])
@@ -789,14 +681,13 @@ class LongCommandClient(WinRMClient):
                 shell_cmd = self._shells[0]
             except IndexError:
                 # nothing to stop or delete, return None
-                self.close_connection()
                 returnValue(None)
         try:
             self._shells.remove(shell_cmd)
         except ValueError:
             pass
         try:
-            yield self._signal_ctrl_c(*shell_cmd)
+            yield self._signal_ctrl_c(shell_cmd)
         except Exception as e:
             if 'internal error' in e.message or 'integrity' in e.message:
                 # problem stopping command
@@ -834,7 +725,6 @@ class LongCommandClient(WinRMClient):
                 pass
             else:
                 raise e
-        self.close_connection()
         returnValue(response)
 
 
@@ -851,15 +741,15 @@ class EnumerateClient(WinRMClient):
         self._hostname = self._conn_info.ipaddress
         self.key = (self._conn_info.ipaddress, 'enumerate')
         self._gssclient = None
+        self._get_raw = True
 
     def decrypt_body(self, body):
-        return self._gssclient.decrypt_body(body)
+        """Used by SaxResponseHandler to decrypt response."""
+        return self._connection._gssclient.decrypt_body(body)
 
     @inlineCallbacks
     def enumerate(self, wql, resource_uri=DEFAULT_RESOURCE_URI):
         """Runs a remote WQL query."""
-        if not self.is_connected():
-            yield self.init_connection()
         request_template_name = 'enumerate'
         enumeration_context = None
         items = []
@@ -867,9 +757,8 @@ class EnumerateClient(WinRMClient):
             for i in xrange(_MAX_REQUESTS_PER_ENUMERATION):
                 LOG.debug('{0} "{1}" {2}'.format(
                     self._hostname, wql, request_template_name))
-                self._gssclient, response = yield self.session()._send_request(
+                response = yield self.send_request(
                     request_template_name,
-                    self,
                     resource_uri=resource_uri,
                     wql=wql,
                     enumeration_context=enumeration_context)
@@ -900,32 +789,32 @@ class EnumerateClient(WinRMClient):
         command or enumeration can start
         """
         items = {}
-        if not self.is_connected():
-            yield self.init_connection()
         for enum_info in enum_infos:
             try:
-                items[enum_info] = yield self.session().semrun(
-                    self.enumerate,
+                items[enum_info] = yield self.enumerate(
                     enum_info.wql,
                     enum_info.resource_uri)
             except RequestError as e:
                 LOG.debug('{0} {1}'.format(self._hostname, e))
                 # only raise Unauthorized or Forbidden.  no need to continue
                 # Simple RequestError could just be missing wmi class
-                if isinstance(e, UnauthorizedError) or isinstance(e, ForbiddenError):
-                    self.close_connection()
+                if isinstance(e, UnauthorizedError) or\
+                        isinstance(e, ForbiddenError):
+                    self.close_connection(self._connection)
                     raise e
             except Exception as e:
                 # Fail the collection for general errors.
-                self.close_connection()
+                self.close_connection(self._connection)
                 raise e
 
-        self.close_connection()
+        self.close_connection(self._connection)
         returnValue(items)
 
 
 class AssociatorClient(EnumerateClient):
-    """WinRM Client that can return wmi classes that are associated with
+    r"""WinRM Client used to find associated wmi classes.
+
+    this client can return wmi classes that are associated with
         another wmi class through a single property.
         First a regular wmi query is run to select objects from a class.
             e.g. 'select * from Win32_NetworkAdapter'
@@ -933,7 +822,8 @@ class AssociatorClient(EnumerateClient):
         using a specific property of the object as input to return
         a result class.
             e.g. for interface in interfaces:
-                "ASSOCIATORS OF {Win32_NetworkAdapter.DeviceID=interface.DeviceID} WHERE ResultClass=Win32_PnPEntity'
+                "ASSOCIATORS OF {Win32_NetworkAdapter.DeviceID=interface.\
+                DeviceID} WHERE ResultClass=Win32_PnPEntity'
     """
 
     @inlineCallbacks

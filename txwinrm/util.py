@@ -27,7 +27,7 @@ from twisted.internet.threads import deferToThread
 from . import constants as c
 from twisted_utils import add_timeout
 
-from .krb5 import kinit, ccname, add_trusted_realm, config
+from .krb5 import kinit, klist, ccname, add_trusted_realm, config
 
 # ZEN-15434 lazy import to avoid segmentation fault during install
 kerberos = None
@@ -36,7 +36,6 @@ log = logging.getLogger('winrm')
 _XML_WHITESPACE_PATTERN = re.compile(r'>\s+<')
 _AGENT = None
 _MAX_PERSISTENT_PER_HOST = 200
-_CACHED_CONNECTION_TIMEOUT = 24000
 _CONNECT_TIMEOUT = 500
 _NANOSECONDS_PATTERN = re.compile(r'\.(\d{6})(\d{3})')
 _REQUEST_TEMPLATE_NAMES = (
@@ -62,8 +61,7 @@ Content-Type: application/octet-stream
 {emsg}--Encrypted Boundary
 """
 
-_KRB_INTERNAL_CACHE_ERR = 'Internal credentials cache error while storing '\
-    'credentials while getting initial credentials'
+_KRB_INTERNAL_CACHE_ERR = 'Internal credentials cache error'
 
 
 def _has_get_attr(obj, attr_name):
@@ -82,19 +80,21 @@ class MyWebClientContextFactory(object):
         return self._options.getContext()
 
 
-def _get_agent():
+def _get_agent(connect_timeout=_CONNECT_TIMEOUT):
     context_factory = MyWebClientContextFactory()
     try:
         # HTTPConnectionPool has been present since Twisted version 12.1
         from twisted.web.client import HTTPConnectionPool
         pool = HTTPConnectionPool(reactor, persistent=True)
         pool.maxPersistentPerHost = _MAX_PERSISTENT_PER_HOST
-        pool.cachedConnectionTimeout = _CACHED_CONNECTION_TIMEOUT
         agent = Agent(reactor, context_factory,
-                      connectTimeout=_CONNECT_TIMEOUT, pool=pool)
+                      connectTimeout=connect_timeout, pool=pool)
     except ImportError:
         from _zenclient import ZenAgent
-        agent = ZenAgent(reactor, context_factory, persistent=True, maxConnectionsPerHostName=1)
+        agent = ZenAgent(reactor,
+                         context_factory,
+                         persistent=True,
+                         maxConnectionsPerHostName=1)
     return agent
 
 
@@ -228,7 +228,7 @@ class AuthGSSClient(object):
         gssflags = kerberos.GSS_C_CONF_FLAG | kerberos.GSS_C_MUTUAL_FLAG |\
             kerberos.GSS_C_SEQUENCE_FLAG | kerberos.GSS_C_INTEG_FLAG
 
-        os.environ['KRB5CCNAME'] = ccname(self._conn_info.username)
+        os.environ['KRB5CCNAME'] = 'DIR:{}'.format(ccname(''))
         if self._conn_info.trusted_realm and self._conn_info.trusted_kdc:
             add_trusted_realm(self._conn_info.trusted_realm,
                               self._conn_info.trusted_kdc)
@@ -263,12 +263,9 @@ class AuthGSSClient(object):
         log.debug('{} GSSAPI step challenge="{}"'.format(
             self._conn_info.hostname, challenge))
 
-        def gss_step_sem():
-            os.environ['KRB5CCNAME'] = ccname(self._conn_info.username)
-            log.debug('set KRB5CCNAME to {}'.format(os.environ['KRB5CCNAME']))
-            return kerberos.authGSSClientStep(self._context, challenge)
-
-        return deferToThread(gss_step_sem)
+        return deferToThread(kerberos.authGSSClientStep,
+                             self._context,
+                             challenge)
 
     @defer.inlineCallbacks
     def get_base64_client_data(self, challenge=''):
@@ -287,9 +284,11 @@ class AuthGSSClient(object):
                 if msg == 'Cannot determine realm for numeric host address':
                     raise Exception(msg)
                 elif msg == 'Server not found in Kerberos database':
-                    raise Exception(
-                        msg + ': Attempted to get ticket for {}. Ensure'
-                        ' reverse DNS is correct.'.format(self._service))
+                    klist_result = yield klist()
+                    if self._conn_info.username in klist_result.lower():
+                        raise Exception(
+                            msg + ': Attempted to get ticket for {}. Ensure'
+                            ' reverse DNS is correct.'.format(self._service))
                 log.debug('{} {}. Calling kinit.'.format(
                     self._conn_info.hostname, msg))
                 kinit_result = yield kinit(
@@ -309,6 +308,8 @@ class AuthGSSClient(object):
                             extra = ' Make sure all KDCs are valid: {}'.format(
                                 ','.join(config.realms[self._realm]))
                         raise Exception(kinit_result + extra)
+                    else:
+                        continue
 
         if result_code != kerberos.AUTH_GSS_CONTINUE:
             raise Exception('failed to obtain service principal ticket ({0}).'
