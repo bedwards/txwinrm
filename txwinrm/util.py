@@ -27,7 +27,7 @@ from twisted.internet.threads import deferToThread
 from . import constants as c
 from twisted_utils import add_timeout
 
-from .krb5 import kinit, ccname, add_trusted_realm, config
+from .krb5 import kinit, klist, ccname, add_trusted_realm, config
 
 # ZEN-15434 lazy import to avoid segmentation fault during install
 kerberos = None
@@ -228,7 +228,7 @@ class AuthGSSClient(object):
         gssflags = kerberos.GSS_C_CONF_FLAG | kerberos.GSS_C_MUTUAL_FLAG |\
             kerberos.GSS_C_SEQUENCE_FLAG | kerberos.GSS_C_INTEG_FLAG
 
-        os.environ['KRB5CCNAME'] = ccname(self._conn_info.username)
+        os.environ['KRB5CCNAME'] = 'DIR:{}'.format(ccname(''))
         if self._conn_info.trusted_realm and self._conn_info.trusted_kdc:
             add_trusted_realm(self._conn_info.trusted_realm,
                               self._conn_info.trusted_kdc)
@@ -263,12 +263,9 @@ class AuthGSSClient(object):
         log.debug('{} GSSAPI step challenge="{}"'.format(
             self._conn_info.hostname, challenge))
 
-        def gss_step_sem():
-            os.environ['KRB5CCNAME'] = ccname(self._conn_info.username)
-            log.debug('set KRB5CCNAME to {}'.format(os.environ['KRB5CCNAME']))
-            return kerberos.authGSSClientStep(self._context, challenge)
-
-        return deferToThread(gss_step_sem)
+        return deferToThread(kerberos.authGSSClientStep,
+                             self._context,
+                             challenge)
 
     @defer.inlineCallbacks
     def get_base64_client_data(self, challenge=''):
@@ -287,9 +284,11 @@ class AuthGSSClient(object):
                 if msg == 'Cannot determine realm for numeric host address':
                     raise Exception(msg)
                 elif msg == 'Server not found in Kerberos database':
-                    raise Exception(
-                        msg + ': Attempted to get ticket for {}. Ensure'
-                        ' reverse DNS is correct.'.format(self._service))
+                    klist_result = yield klist()
+                    if self._conn_info.username in klist_result.lower():
+                        raise Exception(
+                            msg + ': Attempted to get ticket for {}. Ensure'
+                            ' reverse DNS is correct.'.format(self._service))
                 log.debug('{} {}. Calling kinit.'.format(
                     self._conn_info.hostname, msg))
                 kinit_result = yield kinit(
