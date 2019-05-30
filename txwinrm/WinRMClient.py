@@ -408,7 +408,7 @@ class WinRMClient(object):
                 reactor.callLater(seconds, d.callback, None)
                 return d
             try:
-                yield expire_ticket(lifetime)
+                yield expire_ticket(lifetime + 1)
             except Exception:
                 pass
             connection = yield self.init_connection()
@@ -440,14 +440,16 @@ class WinRMClient(object):
                                              request,
                                              **kwargs)
         response = yield self._request_d
-        self._request_d = None
         returnValue(response)
 
     @inlineCallbacks
     def _send_request(self, connection, request, **kwargs):
         """Send a request through a WinRMConnection."""
         # if we do not have a current connection, create a new one
-        if not connection:
+        if connection:
+            if self.is_kerberos():
+                connection = yield self.check_lifetime(connection)
+        else:
             connection = yield self.connection()
 
         req = Request(self, request, **kwargs)
@@ -460,12 +462,17 @@ class WinRMClient(object):
             response = yield add_timeout(response_d,
                                          self._conn_info.timeout + 1)
         except Exception as e:
-            retry = isinstance(e, kerberos.GSSError) and\
+            expired_retry = isinstance(e, kerberos.GSSError) and\
                 'The referenced context has expired' in e.args[0][0]
-            if any([isinstance(e, RetryRequest),
-                    retry]):
+            if isinstance(e, RetryRequest) or expired_retry:
                 LOG.debug('{} retring request {}'.format(
                     self._conn_info.hostname, req.request_template_name))
+                if expired_retry:
+                    d = Deferred()
+                    try:
+                        yield add_timeout(d, 1)
+                    except Exception:
+                        pass
                 self.close_connection(connection)
                 connection = yield self.connection()
                 req.retry = True
