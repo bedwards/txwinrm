@@ -47,6 +47,10 @@ class WinrmCollectClient(WinRMClient):
         self._hostname = self._conn_info.ipaddress
         self.key = (self._conn_info.ipaddress, 'enumerate')
 
+    def decrypt_body(self, body):
+        """Used by SaxResponseHandler to decrypt response."""
+        return self._connection._gssclient.decrypt_body(body)
+
     @defer.inlineCallbacks
     def test_context_lifetime(self, enum_infos):
         """Test expired context handling.
@@ -60,36 +64,30 @@ class WinrmCollectClient(WinRMClient):
         AD to be 10 minutes in group policy
         """
         t_print('init_connection')
-        yield self.init_connection()
-        while True:
-            lifetime = self.session()._gssclient.context_lifetime()
-            t_print('lifetime left: {}s'.format(lifetime))
-            self.session().set_lifetime_limit(60)
-            if lifetime <= 60:
-                break
+        connection = yield self.connection()
+        lifetime = connection._gssclient.context_lifetime()
+        t_print('lifetime left: {}s'.format(lifetime))
+        if lifetime >= 5:
             t_print('kill connection')
-            self.session().reset_all()
+            self.close_connection(connection)
             d = defer.Deferred()
             try:
-                t_print('sleep 60 seconds')
-                yield add_timeout(d, 60)
+                t_print('sleep {} seconds'.format(lifetime - 5))
+                yield add_timeout(d, lifetime - 5)
             except Exception:
                 pass
-            t_print('init connection')
-            yield self.init_connection()
 
-        t_print('_lifetime_limit: {}'.format(self.session()._lifetime_limit))
         request_template_name = 'enumerate'
         enumeration_context = None
         items = []
+        self._get_raw = True
         for enum_info in enum_infos:
             try:
                 for i in xrange(_MAX_REQUESTS_PER_ENUMERATION):
                     log.debug('{0} "{1}" {2}'.format(
                         self._hostname, enum_info.wql, request_template_name))
-                    response = yield self.session()._send_request(
+                    response = yield self.send_request(
                         request_template_name,
-                        self,
                         resource_uri=DEFAULT_RESOURCE_URI,
                         wql=enum_info.wql,
                         enumeration_context=enumeration_context)
@@ -106,12 +104,12 @@ class WinrmCollectClient(WinRMClient):
             except Exception as e:
                 log.debug('{0} {1}'.format(self._hostname, e))
                 raise
-        lifetime = self.session()._gssclient.context_lifetime()
+        lifetime = self._connection._gssclient.context_lifetime()
         t_print('new connection lifetime left: {}s'.format(lifetime))
         defer.returnValue(items)
 
     @defer.inlineCallbacks
-    def do_collect(self, conn_info, enum_infos):
+    def do_collect(self, enum_infos):
         """
         conn_info has the following attributes
             hostname
@@ -121,7 +119,7 @@ class WinrmCollectClient(WinRMClient):
             scheme: http (https coming soon)
             port: int
         """
-        client = EnumerateClient(conn_info)
+        client = EnumerateClient(self._conn_info)
         items = {}
         for enum_info in enum_infos:
             try:
@@ -148,6 +146,7 @@ if __name__ == '__main__':
     @defer.inlineCallbacks
     def do_example_collect():
         connectiontype = 'Keep-Alive'
+        # enter your information here
         conn_info = ConnectionInfo(
             "",  # hostname
             "kerberos",
@@ -160,12 +159,14 @@ if __name__ == '__main__':
             '',  # kdc
             ipaddress='',  # ipaddress if no dns
         )
+
         winrm = WinrmCollectClient(conn_info)
         wql1 = create_enum_info(
             'Select Caption, DeviceID, Name From Win32_Processor')
         wql2 = create_enum_info(
             'select Name, Label, Capacity from Win32_Volume')
-        items = yield winrm.test_context_lifetime([wql1, wql2])
+        # items = yield winrm.test_context_lifetime([wql1, wql2])
+        items = yield winrm.do_collect([wql1, wql2])
         t_print('results')
         pprint(items)
         reactor.stop()
