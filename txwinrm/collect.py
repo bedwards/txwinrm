@@ -25,6 +25,7 @@ from .util import (
     UnauthorizedError,
 )
 from .twisted_utils import add_timeout
+from .krb5 import klist
 
 
 EnumInfo = namedtuple('EnumInfo', ['wql', 'resource_uri'])
@@ -134,8 +135,26 @@ class WinrmCollectClient(WinRMClient):
 
         defer.returnValue(items)
 
+    @defer.inlineCallbacks
+    def test_user_in_klist(self):
+        t_print('init_connection')
+        connection = yield self.connection()
+        results = 'Default principal: a@b'
+        t_print('user should not be found results:\n{}'.format(results))
+        if connection._gssclient.user_in_klist(results):
+            print 'found {} in klist results'.format(self._conn_info.username)
+        else:
+            print 'did not find {} in klist results'.format(self._conn_info.username)
+        results = yield klist(['-A'])
+        t_print('user should be found results:\n{}'.format(results))
+        if connection._gssclient.user_in_klist(results):
+            print 'found {} in klist results'.format(self._conn_info.username)
+        else:
+            print 'did not find {} in klist results'.format(self._conn_info.username)
+        defer.returnValue(None)
 
 # ----- An example of useage...
+
 
 if __name__ == '__main__':
     from pprint import pprint
@@ -159,16 +178,18 @@ if __name__ == '__main__':
             '',  # kdc
             ipaddress='',  # ipaddress if no dns
         )
-
         winrm = WinrmCollectClient(conn_info)
         wql1 = create_enum_info(
             'Select Caption, DeviceID, Name From Win32_Processor')
         wql2 = create_enum_info(
             'select Name, Label, Capacity from Win32_Volume')
+        items = []
         # items = yield winrm.test_context_lifetime([wql1, wql2])
         items = yield winrm.do_collect([wql1, wql2])
-        t_print('results')
-        pprint(items)
+        # yield winrm.test_user_in_klist()
+        if items:
+            t_print('results')
+            pprint(items)
         reactor.stop()
 
     reactor.callWhenRunning(do_example_collect)
