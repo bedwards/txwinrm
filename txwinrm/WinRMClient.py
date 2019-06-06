@@ -99,7 +99,7 @@ def renew_ticket(conn_info):
                 conn_info.password,
                 conn_info.dcip,
                 renew=True)
-    RENEWALS.pop(conn_info.username)
+    RENEWALS.pop(conn_info.username.lower())
     returnValue(None)
 
 
@@ -439,14 +439,14 @@ class WinRMClient(object):
         connection = yield self.init_connection()
         if self.is_kerberos():
             connection = yield self.check_lifetime(connection)
-            if self._conn_info.username not in RENEWALS:
+            if self._conn_info.username.lower() not in RENEWALS:
                 timeout = connection._gssclient.context_lifetime()
                 if timeout < self._conn_info.renew_time:
                     timeout = 0
                 else:
                     timeout -= self._conn_info.renew_time
 
-                RENEWALS[self._conn_info.username] = reactor.callLater(
+                RENEWALS[self._conn_info.username.lower()] = reactor.callLater(
                     timeout, renew_ticket, self._conn_info)
         returnValue(connection)
 
