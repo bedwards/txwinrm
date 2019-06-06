@@ -72,9 +72,12 @@ from .enumerate import (
 )
 from .SessionManager import SESSION_MANAGER, Session, copy
 from .twisted_utils import add_timeout, with_timeout
+from .krb5 import kinit
+
 kerberos = None
 LOG = logging.getLogger('winrm')
 KRB5_SEM = DeferredSemaphore(1)
+RENEWALS = {}
 
 
 class ShellException(Exception):
@@ -87,6 +90,17 @@ class ResponseError(Exception):
 
 class RetryRequest(Exception):
     pass
+
+
+@inlineCallbacks
+def renew_ticket(conn_info):
+    """Renew kerberos ticket preemptively."""
+    yield kinit(conn_info.username,
+                conn_info.password,
+                conn_info.dcip,
+                renew=True)
+    RENEWALS.pop(conn_info.username.lower())
+    returnValue(None)
 
 
 def create_shell_from_elem(elem):
@@ -425,6 +439,15 @@ class WinRMClient(object):
         connection = yield self.init_connection()
         if self.is_kerberos():
             connection = yield self.check_lifetime(connection)
+            if self._conn_info.username.lower() not in RENEWALS:
+                timeout = connection._gssclient.context_lifetime()
+                if timeout < self._conn_info.renew_time:
+                    timeout = 0
+                else:
+                    timeout -= self._conn_info.renew_time
+
+                RENEWALS[self._conn_info.username.lower()] = reactor.callLater(
+                    timeout, renew_ticket, self._conn_info)
         returnValue(connection)
 
     @inlineCallbacks
