@@ -320,7 +320,8 @@ class KinitProcessProtocol(ProcessProtocol):
 
 
 @defer.inlineCallbacks
-def kinit(username, password, kdc, includedir=None, disable_rdns=False):
+def kinit(username, password, kdc, includedir=None,
+          disable_rdns=False, renew=False):
     """Perform kerberos initialization."""
     kinit = None
     for path in ('/usr/bin/kinit', '/usr/kerberos/bin/kinit'):
@@ -349,7 +350,10 @@ def kinit(username, password, kdc, includedir=None, disable_rdns=False):
     if not os.path.isdir(dirname):
         os.makedirs(dirname)
 
-    kinit_args = [kinit, '{}@{}'.format(user, realm)]
+    if renew:
+        kinit_args = [kinit, '-R', '{}@{}'.format(user, realm)]
+    else:
+        kinit_args = [kinit, '{}@{}'.format(user, realm)]
     kinit_env = {
         'KRB5_CONFIG': config.path,
         'KRB5CCNAME': 'DIR:{}'.format(ccname),

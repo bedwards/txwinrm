@@ -267,6 +267,44 @@ class AuthGSSClient(object):
                              self._context,
                              challenge)
 
+    def user_in_klist(self, results):
+        """Test if user has kinited.
+
+        klist -A shows all ticket caches, but we only need the
+        Default principals.
+        example output:
+        Ticket cache: DIR::/opt/zenoss/var/krb5cc/tkt
+        Default principal: administrator@SOLUTIONS-DEV.LOCAL
+
+        Valid starting     Expires            Service principal
+        06/05/19 20:16:35  06/05/19 21:16:35  krbtgt/SOLUTIONS-DEV.LOCAL@SOLUTIONS-DEV.LOCAL
+                renew until 06/12/19 19:46:04
+        06/05/19 20:16:35  06/05/19 20:26:35  HTTPS/sqlsrv02.solutions-dev.local@SOLUTIONS-DEV.LOCAL
+                renew until 06/12/19 19:46:04
+        06/05/19 20:18:09  06/05/19 20:28:09  HTTP/dc01.solutions-dev.local@SOLUTIONS-DEV.LOCAL
+                renew until 06/12/19 19:46:04
+
+        Ticket cache: DIR::/opt/zenoss/var/krb5cc/tktoNk6lR
+        Default principal: solutions@SOL-WIN.LAB
+
+        Valid starting     Expires            Service principal
+        06/05/19 19:46:13  06/06/19 05:46:13  krbtgt/SOL-WIN.LAB@SOL-WIN.LAB
+                renew until 06/12/19 19:46:13
+        06/05/19 19:46:14  06/06/19 05:46:13  HTTP/wsc-cluster.sol-win.lab@SOL-WIN.LAB
+                renew until 06/12/19 19:46:13
+        06/05/19 19:46:53  06/06/19 05:46:13  HTTP/wsc-node-03.sol-win.lab@SOL-WIN.LAB
+                renew until 06/12/19 19:46:13
+        06/05/19 19:47:14  06/06/19 05:46:13  HTTP/wsc-node-01.sol-win.lab@SOL-WIN.LAB
+                renew until 06/12/19 19:46:13
+        06/05/19 19:48:04  06/06/19 05:46:13  HTTP/wsc-node-02.sol-win.lab@SOL-WIN.LAB
+                renew until 06/12/19 19:46:13
+        """
+        # just get lines with "Default principal:"
+        results = filter(lambda x: x.startswith('Default principal'),
+                         results.split('\n'))
+        users = map(lambda x: x.split('l: ')[1].lower(), results)
+        return filter(lambda x: x in self._username.lower(), users)
+
     @defer.inlineCallbacks
     def get_base64_client_data(self, challenge=''):
         """Get authorization token.
@@ -284,8 +322,9 @@ class AuthGSSClient(object):
                 if msg == 'Cannot determine realm for numeric host address':
                     raise Exception(msg)
                 elif msg == 'Server not found in Kerberos database':
-                    klist_result = yield klist()
-                    if self._conn_info.username in klist_result.lower():
+                    # call klist -A.  klist -l will truncate usernames
+                    klist_result = yield klist(['-A'])
+                    if klist_result and self.user_in_klist(klist_result):
                         raise Exception(
                             msg + ': Attempted to get ticket for {}. Ensure'
                             ' reverse DNS is correct.'.format(self._service))
@@ -494,7 +533,8 @@ def update_conn_info(old_conn_info, new_conn_info):
                               locale=new_conn_info.locale,
                               include_dir=new_conn_info.include_dir,
                               disable_rdns=new_conn_info.disable_rdns,
-                              connect_timeout=new_conn_info.connect_timeout))
+                              connect_timeout=new_conn_info.connect_timeout,
+                              renew_time=new_conn_info.renew_time))
     else:
         return(old_conn_info._replace(hostname=new_conn_info.hostname,
                                       auth_type=new_conn_info.auth_type,
@@ -515,7 +555,8 @@ def update_conn_info(old_conn_info, new_conn_info):
                                       locale=new_conn_info.locale,
                                       include_dir=new_conn_info.include_dir,
                                       disable_rdns=new_conn_info.disable_rdns,
-                                      connect_timeout=new_conn_info.connect_timeout))
+                                      connect_timeout=new_conn_info.connect_timeout,
+                                      renew_time=new_conn_info.renew_time))
 
 
 class ConnectionInfo(namedtuple(
@@ -539,12 +580,13 @@ class ConnectionInfo(namedtuple(
         'locale',
         'include_dir',
         'disable_rdns',
-        'connect_timeout'])):
+        'connect_timeout',
+        'renew_time'])):
     def __new__(cls, hostname, auth_type, username, password, scheme, port,
                 connectiontype, keytab, dcip, timeout=60, trusted_realm='',
                 trusted_kdc='', ipaddress='', service='', envelope_size=512000,
                 code_page=65001, locale='en-US', include_dir=None,
-                disable_rdns=False, connect_timeout=60):
+                disable_rdns=False, connect_timeout=60, renew_time=300):
         if not ipaddress:
             ipaddress = hostname
         if not service:
@@ -562,7 +604,8 @@ class ConnectionInfo(namedtuple(
                                                   envelope_size, code_page,
                                                   locale, include_dir,
                                                   disable_rdns,
-                                                  int(connect_timeout))
+                                                  int(connect_timeout),
+                                                  renew_time)
 
 
 def verify_include_dir(conn_info):
