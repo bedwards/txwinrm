@@ -85,8 +85,6 @@ class Config(object):
 
         # For further usage by kerberos python module.
         os.environ['KRB5_CONFIG'] = self.path
-        os.environ['KRB5CCNAME'] = 'DIR:{}'.format(
-            os.path.dirname(self.get_ccname('')))
 
     def add_includedir(self, includedir):
         self.includedirs.add(includedir)
@@ -345,18 +343,18 @@ def kinit(username, password, kdc, includedir=None,
         config.add_includedir(includedir)
     config.add_kdc(realm, kdc, disable_rdns)
 
-    ccname = config.get_ccname('')
-    dirname = os.path.dirname(ccname)
+    cachename = config.get_ccname(username)
+    dirname = os.path.dirname(cachename)
     if not os.path.isdir(dirname):
         os.makedirs(dirname)
 
     if renew:
         kinit_args = [kinit, '-R', '{}@{}'.format(user, realm)]
     else:
-        kinit_args = [kinit, '{}@{}'.format(user, realm)]
+        kinit_args = [kinit, '-c', cachename, '{}@{}'.format(user, realm)]
     kinit_env = {
         'KRB5_CONFIG': config.path,
-        'KRB5CCNAME': 'DIR:{}'.format(ccname),
+        'KRB5CCNAME': cachename,
     }
 
     protocol = KinitProcessProtocol(password)
@@ -373,63 +371,6 @@ def kinit(username, password, kdc, includedir=None,
     except TypeError:
         # Everything's ok
         pass
-    defer.returnValue(results)
-
-
-class KlistProcessProtocol(ProcessProtocol):
-    """Communicates with klist command.
-    """
-
-    def __init__(self):
-        self.d = defer.Deferred()
-        self._data = ''
-        self._error = ''
-
-    def errReceived(self, data):
-        self._error += data
-
-    def outReceived(self, data):
-        self._data += data
-
-    def processEnded(self, reason):
-        self.d.callback(self._data if self._data else self._error)
-
-
-@defer.inlineCallbacks
-def klist(options=['-l']):
-    """Run klist with default -l option.
-
-    mainly used to check the credential cache collection(-l option).
-    can be used to run klist for other purposes by sending a list
-    of options.
-    """
-    klist = None
-    for path in ('/usr/bin/klist', '/usr/kerberos/bin/klist'):
-        if os.path.isfile(path):
-            klist = path
-            break
-
-    if not klist:
-        raise Exception("krb5-workstation is not installed")
-
-    global config
-
-    ccname = config.get_ccname('')
-    dirname = os.path.dirname(ccname)
-    if not os.path.isdir(dirname):
-        os.makedirs(dirname)
-
-    klist_args = [klist, ' '.join(options)]
-    klist_env = {
-        'KRB5_CONFIG': config.path,
-        'KRB5CCNAME': 'DIR:{}'.format(ccname),
-    }
-
-    protocol = KlistProcessProtocol()
-
-    reactor.spawnProcess(protocol, klist, klist_args, klist_env)
-
-    results = yield protocol.d
     defer.returnValue(results)
 
 

@@ -511,6 +511,9 @@ Run txwinrm/test/precommit before merging to master. This requires that you...
 Changes
 -------
 
+1.4.3
+* revert using credential cache collections due to limitation of only one user per domain
+
 1.4.0
 * simplify connections to windows devices
 * allow for multiple users across domains by using credential cache collections

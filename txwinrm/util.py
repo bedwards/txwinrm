@@ -25,9 +25,9 @@ from twisted.internet.ssl import ClientContextFactory
 from twisted.web.http_headers import Headers
 from twisted.internet.threads import deferToThread
 from . import constants as c
-from twisted_utils import add_timeout
+from twisted_utils import add_timeout, with_timeout
 
-from .krb5 import kinit, klist, ccname, add_trusted_realm, config
+from .krb5 import kinit, ccname, add_trusted_realm, config
 
 # ZEN-15434 lazy import to avoid segmentation fault during install
 kerberos = None
@@ -228,7 +228,7 @@ class AuthGSSClient(object):
         gssflags = kerberos.GSS_C_CONF_FLAG | kerberos.GSS_C_MUTUAL_FLAG |\
             kerberos.GSS_C_SEQUENCE_FLAG | kerberos.GSS_C_INTEG_FLAG
 
-        os.environ['KRB5CCNAME'] = 'DIR:{}'.format(ccname(''))
+        os.environ['KRB5CCNAME'] = ccname(self._username)
         if self._conn_info.trusted_realm and self._conn_info.trusted_kdc:
             add_trusted_realm(self._conn_info.trusted_realm,
                               self._conn_info.trusted_kdc)
@@ -263,47 +263,12 @@ class AuthGSSClient(object):
         log.debug('{} GSSAPI step challenge="{}"'.format(
             self._conn_info.hostname, challenge))
 
-        return deferToThread(kerberos.authGSSClientStep,
-                             self._context,
-                             challenge)
+        def gss_step_sem():
+            log.debug('set KRB5CCNAME to {}'.format(os.environ['KRB5CCNAME']))
+            os.environ['KRB5CCNAME'] = ccname(self._username)
+            return kerberos.authGSSClientStep(self._context, challenge)
 
-    def user_in_klist(self, results):
-        """Test if user has kinited.
-
-        klist -A shows all ticket caches, but we only need the
-        Default principals.
-        example output:
-        Ticket cache: DIR::/opt/zenoss/var/krb5cc/tkt
-        Default principal: administrator@SOLUTIONS-DEV.LOCAL
-
-        Valid starting     Expires            Service principal
-        06/05/19 20:16:35  06/05/19 21:16:35  krbtgt/SOLUTIONS-DEV.LOCAL@SOLUTIONS-DEV.LOCAL
-                renew until 06/12/19 19:46:04
-        06/05/19 20:16:35  06/05/19 20:26:35  HTTPS/sqlsrv02.solutions-dev.local@SOLUTIONS-DEV.LOCAL
-                renew until 06/12/19 19:46:04
-        06/05/19 20:18:09  06/05/19 20:28:09  HTTP/dc01.solutions-dev.local@SOLUTIONS-DEV.LOCAL
-                renew until 06/12/19 19:46:04
-
-        Ticket cache: DIR::/opt/zenoss/var/krb5cc/tktoNk6lR
-        Default principal: solutions@SOL-WIN.LAB
-
-        Valid starting     Expires            Service principal
-        06/05/19 19:46:13  06/06/19 05:46:13  krbtgt/SOL-WIN.LAB@SOL-WIN.LAB
-                renew until 06/12/19 19:46:13
-        06/05/19 19:46:14  06/06/19 05:46:13  HTTP/wsc-cluster.sol-win.lab@SOL-WIN.LAB
-                renew until 06/12/19 19:46:13
-        06/05/19 19:46:53  06/06/19 05:46:13  HTTP/wsc-node-03.sol-win.lab@SOL-WIN.LAB
-                renew until 06/12/19 19:46:13
-        06/05/19 19:47:14  06/06/19 05:46:13  HTTP/wsc-node-01.sol-win.lab@SOL-WIN.LAB
-                renew until 06/12/19 19:46:13
-        06/05/19 19:48:04  06/06/19 05:46:13  HTTP/wsc-node-02.sol-win.lab@SOL-WIN.LAB
-                renew until 06/12/19 19:46:13
-        """
-        # just get lines with "Default principal:"
-        results = filter(lambda x: x.startswith('Default principal'),
-                         results.split('\n'))
-        users = map(lambda x: x.split('l: ')[1].lower(), results)
-        return filter(lambda x: x in self._username.lower(), users)
+        return GSS_SEM.run(gss_step_sem)
 
     @defer.inlineCallbacks
     def get_base64_client_data(self, challenge=''):
@@ -322,12 +287,9 @@ class AuthGSSClient(object):
                 if msg == 'Cannot determine realm for numeric host address':
                     raise Exception(msg)
                 elif msg == 'Server not found in Kerberos database':
-                    # call klist -A.  klist -l will truncate usernames
-                    klist_result = yield klist(['-A'])
-                    if klist_result and self.user_in_klist(klist_result):
-                        raise Exception(
-                            msg + ': Attempted to get ticket for {}. Ensure'
-                            ' reverse DNS is correct.'.format(self._service))
+                    raise Exception(
+                        msg + ': Attempted to get ticket for {}. Ensure'
+                        ' reverse DNS is correct.'.format(self._service))
                 log.debug('{} {}. Calling kinit.'.format(
                     self._conn_info.hostname, msg))
                 kinit_result = yield kinit(
