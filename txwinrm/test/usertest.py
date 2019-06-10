@@ -71,13 +71,13 @@ class WinrmCollectClient(object):
 
         try:
             assert(conn_info.username.lower() == authGSSClientUserName(
-                client.session()._gssclient._context).lower())
+                client._connection._gssclient._context).lower())
         except Exception:
             print 'ERROR: Expected and Actual usernames do not match for host'\
                   ' {}'.format(conn_info.hostname)
             print 'Expected username: {}, Actual username {}'.format(
                 conn_info.username,
-                authGSSClientUserName(client.session()._gssclient._context))
+                authGSSClientUserName(client._connection._gssclient._context))
         else:
             print 'Expected and Actual usernames match for host {}: {}'\
                 .format(conn_info.hostname, conn_info.username)
