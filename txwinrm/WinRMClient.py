@@ -70,7 +70,7 @@ from .enumerate import (
     _MAX_REQUESTS_PER_ENUMERATION,
     ItemsAccumulator
 )
-from .SessionManager import SESSION_MANAGER, Session, copy
+from .SessionManager import copy
 from .twisted_utils import add_timeout, with_timeout
 from .krb5 import kinit
 
@@ -506,13 +506,22 @@ class WinRMClient(object):
                 try:
                     response = yield add_timeout(response_d,
                                                  self._conn_info.timeout + 1)
+                    # save new connection
+                    self._connection = connection
                     returnValue(response)
                 except Exception as e:
-                    self.close_connection(connection)
+                    if not isinstance(e, RequestError):
+                        # destroy connection on anything but RequestError
+                        # could be simple OperationTimeout while receiving
+                        self.close_connection(connection)
+                        self._connection = None
+                    else:
+                        self._connection = connection
                     raise e
             elif isinstance(e, TimeoutError):
                 # either we timed out sending or receiving response
                 self.close_connection(connection)
+                self._connection = None
                 LOG.debug('{} request {} timed out.'.format(
                     self._conn_info.hostname, req.request_template_name))
             raise e
