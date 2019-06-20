@@ -61,7 +61,10 @@ Content-Type: application/octet-stream
 {emsg}--Encrypted Boundary
 """
 
-_KRB_INTERNAL_CACHE_ERR = 'Internal credentials cache error'
+_KRB_INTERNAL_CACHE_ERR = [
+    'Internal credentials cache error',
+    'Failed to store credentials'
+]
 
 
 def _has_get_attr(obj, attr_name):
@@ -301,7 +304,7 @@ class AuthGSSClient(object):
                 if kinit_result:
                     # this error is ok.  it just means more
                     # than one process is calling kinit
-                    if _KRB_INTERNAL_CACHE_ERR not in kinit_result:
+                    if not any(s in kinit_result for s in _KRB_INTERNAL_CACHE_ERR):
                         kinit_result = kinit_result.strip()
                         extra = ''
                         if 'Realm not local to KDC while getting initial '\
