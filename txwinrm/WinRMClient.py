@@ -487,7 +487,8 @@ class WinRMClient(object):
         except Exception as e:
             expired_retry = isinstance(e, kerberos.GSSError) and\
                 'The referenced context has expired' in e.args[0][0]
-            if isinstance(e, RetryRequest) or expired_retry:
+            # should we retry request on a new connection?
+            if isinstance(e, (RetryRequest, TimeoutError)) or expired_retry:
                 LOG.debug('{} retring request {}'.format(
                     self._conn_info.hostname, req.request_template_name))
                 if expired_retry:
@@ -515,15 +516,13 @@ class WinRMClient(object):
                         # could be simple OperationTimeout while receiving
                         self.close_connection(connection)
                         self._connection = None
+                        LOG.debug('{} request {} error. {}'.format(
+                            self._conn_info.hostname,
+                            req.request_template_name,
+                            e))
                     else:
                         self._connection = connection
                     raise e
-            elif isinstance(e, TimeoutError):
-                # either we timed out sending or receiving response
-                self.close_connection(connection)
-                self._connection = None
-                LOG.debug('{} request {} timed out.'.format(
-                    self._conn_info.hostname, req.request_template_name))
             raise e
         # save current connection
         self._connection = connection
