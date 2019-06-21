@@ -11,7 +11,7 @@
 
 setup_kwargs = dict(
     name='txwinrm',
-    version='1.4.5',
+    version='1.4.6',
     description='Asynchronous Python WinRM client',
     long_description=open('README.rst').read(),
     license='See LICENSE file',
