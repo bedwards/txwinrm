@@ -14,9 +14,11 @@ import base64
 import logging
 import httplib
 from datetime import datetime
+from distutils.version import LooseVersion
 from collections import namedtuple
 from xml.etree import cElementTree as ET
 from xml.etree.ElementTree import ParseError
+from twisted import version as TWISTED_VERSION
 from twisted.internet import reactor, defer
 from twisted.internet.protocol import Protocol
 from twisted.web.client import Agent
@@ -432,7 +434,10 @@ def _authenticate_with_kerberos(conn_info, url, agent, gss_client=None):
     auth = 'Kerberos {0}'.format(base64_client_data)
     k_headers = Headers(_CONTENT_TYPE)
     k_headers.addRawHeader('Authorization', auth)
-    k_headers.addRawHeader('Content-Length', '0')
+    # starting from twisted 17.1.0 for POST request with empty body twisted puts
+    # content-length: 0 by default
+    if LooseVersion(TWISTED_VERSION.short()) < LooseVersion("17.1.0"):
+        k_headers.addRawHeader('Content-Length', '0')
     log.debug('%s sending auth data', conn_info.hostname)
     response = yield agent.request('POST', url, k_headers, None)
     log.debug('%s received authorization response code %d', conn_info.hostname,
