@@ -273,7 +273,12 @@ class AuthGSSClient(object):
             os.environ['KRB5CCNAME'] = ccname(self._username)
             return kerberos.authGSSClientStep(self._context, challenge)
 
-        return GSS_SEM.run(gss_step_sem)
+        return GSS_SEM.run(
+            with_timeout,
+            fn=deferToThread,
+            args=(gss_step_sem,),
+            kwargs={},
+            seconds=self._conn_info.timeout)
 
     @defer.inlineCallbacks
     def get_base64_client_data(self, challenge=''):
